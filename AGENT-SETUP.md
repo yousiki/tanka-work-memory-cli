@@ -62,43 +62,36 @@ includes `prod` only. Internal builds may include `dev`, `test`, `uat`.
 
 ## Step 3 — Pick a mode & write config
 
-First, initialize the device identity. `deviceId` is a stable UUID for this
-installation; `deviceName` is a human-readable label (defaults to the machine's
-hostname, editable later in the TUI). Both are written to `config.json`:
+### All mode — sync every session on the machine
+
+Each cwd becomes its own project (1:1), lazily created on the backend at first
+sync. No project list needed.
 
 ```bash
-cat > ~/.tanka-wm/config.json <<EOF
+cat > ~/.tanka-wm/config.json <<'EOF'
 {
   "version": 1,
   "mode": "all",
   "wizardStep": "done",
-  "cwds": [],
-  "deviceId": "$(uuidgen | tr '[:upper:]' '[:lower:]')",
-  "deviceName": "$(hostname)"
+  "cwds": []
 }
 EOF
 ```
 
-### All mode — sync every session on the machine
-
-If the user wants **all mode**, the config above is complete. Each cwd becomes
-its own project (1:1), lazily created on the backend at first sync. No further
-setup needed — skip to Step 4.
+No further setup needed — skip to Step 4.
 
 ### Select mode — only configured projects
 
-If the user wants **select mode**, set `mode` to `"select"` and `wizardStep`
-to `"projects"` so the TUI opens directly to the project management screen:
+Set `wizardStep` to `"projects"` so the TUI opens directly to the project
+management screen:
 
 ```bash
-cat > ~/.tanka-wm/config.json <<EOF
+cat > ~/.tanka-wm/config.json <<'EOF'
 {
   "version": 1,
   "mode": "select",
   "wizardStep": "projects",
-  "cwds": [],
-  "deviceId": "$(uuidgen | tr '[:upper:]' '[:lower:]')",
-  "deviceName": "$(hostname)"
+  "cwds": []
 }
 EOF
 ```
@@ -116,9 +109,13 @@ to `"done"` automatically.
 ## Step 4 — Verify
 
 ```bash
-tanka-wm --check   # smoke-test: render one TUI frame and exit 0 (verifies the binary runs)
+tanka-wm --check   # smoke-test: render one TUI frame and exit 0; also auto-generates deviceId + deviceName
 tanka-wm sync      # uploads new/changed sessions; for all mode this also lazily creates remote projects
 ```
+
+`--check` and `sync` both call `ensureDeviceIdentity`, which generates a stable
+`deviceId` (UUID) and `deviceName` (hostname) on first run. No need to set
+them manually. `deviceName` is editable later in the TUI via Tanka settings (`t`).
 
 ## Step 5 — Schedule the sync
 
@@ -175,5 +172,5 @@ SHA-256 checksum, and atomically replaces the running executable.
   sessions re-upload. The upload is complete only after `/sync` API succeeds.
 - **401 handling**: token can expire. On 401, re-fetch the apiKey and overwrite
   `credentials.json`.
-- **deviceId/deviceName**: set in Step 3. If missing, auto-generated on first
-  `sync`. `deviceName` is editable in the TUI via Tanka settings (`t`).
+- **deviceId/deviceName**: auto-generated on first `--check` or `sync` run.
+  `deviceName` is editable in the TUI via Tanka settings (`t`).
