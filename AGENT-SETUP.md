@@ -16,13 +16,15 @@ Five steps, in order. Resolve any missing prerequisite before continuing.
 
 ## Step 1 — Install the CLI
 
-**Option A — install script (recommended):**
+**macOS / Linux:**
 
 ```bash
-# macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/Shanda-Group-Ltd/tanka-work-memory-cli/dev/install.sh | bash
+```
 
-# Windows (PowerShell)
+**Windows (PowerShell):**
+
+```powershell
 irm https://raw.githubusercontent.com/Shanda-Group-Ltd/tanka-work-memory-cli/dev/install.ps1 | iex
 ```
 
@@ -31,19 +33,15 @@ verifies SHA-256 checksum, and installs to `~/.local/bin`. Pin a version with
 `TANKA_WM_VERSION=v1.3.1`, or change the install dir with
 `TANKA_WM_INSTALL_DIR=/usr/local/bin`.
 
-**Option B — build from source:**
+After installation, verify the binary works:
 
 ```bash
-cd /path/to/tanka-work-memory-cli
-bun install
-bun run build          # → dist/tanka-wm-<platform> (self-contained; no node/bun to run)
-# install the binary for this machine onto PATH (adjust the platform suffix):
-install -m 755 dist/tanka-wm-darwin-arm64 /usr/local/bin/tanka-wm
+tanka-wm --version
 ```
 
-```bash
-tanka-wm --version     # verify
-```
+If the command is not found, ensure `~/.local/bin` is in your `PATH` (the
+installer will have prompted or auto-added it — you may need to restart your
+shell).
 
 ## Step 2 — Write the token + environment
 
@@ -64,61 +62,56 @@ includes `prod` only. Internal builds may include `dev`, `test`, `uat`.
 
 ## Step 3 — Pick a mode & write config
 
-Write `config.json`. `deviceId` and `deviceName` are auto-generated on first
-`sync` run if missing (via `ensureDeviceIdentity`), so they're optional here.
-Set `wizardStep: "done"` to skip the TUI wizard.
-
-### All mode — sync every session on the machine
-
-Each cwd becomes its own project (1:1), lazily created on the backend at first
-sync. No project list needed.
+First, initialize the device identity. `deviceId` is a stable UUID for this
+installation; `deviceName` is a human-readable label (defaults to the machine's
+hostname, editable later in the TUI). Both are written to `config.json`:
 
 ```bash
-cat > ~/.tanka-wm/config.json <<'EOF'
+cat > ~/.tanka-wm/config.json <<EOF
 {
   "version": 1,
   "mode": "all",
   "wizardStep": "done",
-  "cwds": []
+  "cwds": [],
+  "deviceId": "$(uuidgen | tr '[:upper:]' '[:lower:]')",
+  "deviceName": "$(hostname)"
 }
 EOF
 ```
+
+### All mode — sync every session on the machine
+
+If the user wants **all mode**, the config above is complete. Each cwd becomes
+its own project (1:1), lazily created on the backend at first sync. No further
+setup needed — skip to Step 4.
 
 ### Select mode — only configured projects
 
-Each project needs a `remoteProjectId` (a backend-issued id — a ~12-char
-nanoid; copy it verbatim from the API response, don't fabricate one) and an
-`origin` (`created` or `joined`). The `cwds` array holds the working
-directories; `projects` references them by `cwdIds`.
+If the user wants **select mode**, set `mode` to `"select"` and `wizardStep`
+to `"projects"` so the TUI opens directly to the project management screen:
 
 ```bash
-cat > ~/.tanka-wm/config.json <<'EOF'
+cat > ~/.tanka-wm/config.json <<EOF
 {
   "version": 1,
   "mode": "select",
-  "wizardStep": "done",
-  "cwds": [
-    { "id": "my-proj", "name": "My Project", "cwd": "/Users/me/code/my-project" },
-    { "id": "my-lib", "name": "My Lib", "cwd": "/Users/me/code/my-lib" }
-  ],
-  "projects": [
-    {
-      "id": "my-proj",
-      "remoteProjectId": "V1StGXR8Z5jd",
-      "name": "My Project",
-      "cwdIds": ["my-proj", "my-lib"],
-      "origin": "created"
-    }
-  ]
+  "wizardStep": "projects",
+  "cwds": [],
+  "deviceId": "$(uuidgen | tr '[:upper:]' '[:lower:]')",
+  "deviceName": "$(hostname)"
 }
 EOF
 ```
 
-To get a `remoteProjectId`, you can either:
-- Use the TUI wizard (`tanka-wm` → step 3 → `c` create / `j` join)
-- Call the API directly: `POST /link/workmemory/auth/project/save` with
-  `{ "displayName": "...", "lookbackDays": 14, "reportLanguage": "en" }`
-  → response contains `projectId` (the nanoid to use as `remoteProjectId`)
+Then tell the user to launch the TUI to configure their projects interactively:
+
+```bash
+tanka-wm
+```
+
+The TUI wizard will guide them through creating or joining projects and
+assigning working directories. Once they finish and save, `wizardStep` advances
+to `"done"` automatically.
 
 ## Step 4 — Verify
 
@@ -182,5 +175,5 @@ SHA-256 checksum, and atomically replaces the running executable.
   sessions re-upload. The upload is complete only after `/sync` API succeeds.
 - **401 handling**: token can expire. On 401, re-fetch the apiKey and overwrite
   `credentials.json`.
-- **deviceId/deviceName**: auto-generated on first `sync` if missing. Override
-  by setting them in `config.json` before first run.
+- **deviceId/deviceName**: set in Step 3. If missing, auto-generated on first
+  `sync`. `deviceName` is editable in the TUI via Tanka settings (`t`).
