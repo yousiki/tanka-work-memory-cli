@@ -8,6 +8,26 @@ Single package, zero runtime dependency beyond bun and `ink`/`react` for the
 terminal UI. The session-discovery core is agent-agnostic; the upload layer
 speaks Tanka's two-step file-upload + `/sync` protocol.
 
+## Install
+
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Shanda-Group-Ltd/tanka-work-memory-cli/dev/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/Shanda-Group-Ltd/tanka-work-memory-cli/dev/install.ps1 | iex
+```
+
+The installer auto-detects your platform, downloads the matching binary from
+GitHub Releases, verifies SHA-256 checksum, and places it in `~/.local/bin`.
+
+To pin a version: `TANKA_WM_VERSION=v1.3.1 curl ... | bash`
+To change install dir: `TANKA_WM_INSTALL_DIR=/usr/local/bin curl ... | bash`
+
 ## What it does / doesn't
 
 **Run modes** (chosen in the wizard's first step, stored as `config.mode`):
@@ -32,6 +52,7 @@ speaks Tanka's two-step file-upload + `/sync` protocol.
 - TUI Board: projects panel, sessions master-detail with per-session upload
   status, local transcript viewer, and config/cron modals.
 - Headless `tanka-wm sync` (the cron target) + cron install/remove.
+- Self-update from GitHub Releases (`tanka-wm update`).
 
 **Doesn't** (this tool is raw-session sync only)
 
@@ -53,7 +74,13 @@ bun run build      # compile self-contained binaries → dist/tanka-wm-<platform
 ```
 
 `bun run build` cross-compiles standalone executables (6 platforms:
-`darwin-arm64/x64`, `linux-x64/arm64`, `windows-x64/arm64`).
+`darwin-arm64/x64`, `linux-x64/arm64`, `windows-x64/arm64`) and generates
+`checksums-sha256.txt` alongside them.
+
+API base URLs are injected at compile time via `TANKA_API_URL_*` environment
+variables and bun's `--define` flag. `TANKA_API_URL_PROD` is required for
+building; `DEV`/`TEST`/`UAT` are optional — omitted environments are excluded
+from the binary.
 
 ## Configuration
 
@@ -69,8 +96,9 @@ State lives under `~/.tanka-wm/` (override with `TANKA_WM_HOME`):
 **Token** — the raw apiKey from `/open/auth/mcp/api-key/work-memory`. Configure
 in the TUI (`t` → Tanka settings) or write `credentials.json` directly.
 
-**Environment** — pick dev/test/uat/prod in Tanka settings. Saved into
-`credentials.json` next to the token.
+**Environment** — only environments with a configured API URL are available.
+The built binary includes whichever `TANKA_API_URL_*` variables were set at
+compile time.
 
 ## Usage
 
@@ -80,6 +108,8 @@ tanka-wm sync [project]       # upload new / changed sessions and exit (cron tar
 tanka-wm cron install [expr]  # install the scheduled-upload job (default: 0 */4 * * *)
 tanka-wm cron status          # show the scheduled-upload job
 tanka-wm cron remove          # remove it
+tanka-wm update               # check for updates and install the latest version
+tanka-wm update --check       # check for updates without installing
 tanka-wm --version | --help
 ```
 
@@ -120,18 +150,22 @@ Per session, in two stages:
 
 ```
 src/
-├── cli.tsx              # entry: TUI / sync / cron / --check / --version
+├── cli.tsx              # entry: TUI / sync / cron / update / --check / --version
 ├── app.tsx              # root component (wizard ⇄ board)
-├── api/                 # axios gateway client + work-memory API endpoints
+├── api/                 # axios client + work-memory API endpoints
 ├── discovery/           # agent-agnostic session discovery
 │   ├── sessions.ts      #   discoverSessionsForProject / scan / SessionRef
 │   └── transcript.ts    #   transcript parsing & rendering
 ├── upload/tanka-client.ts   # two-step file upload (native fetch → S3)
 ├── sync.ts              # incremental sync (upload + /sync API)
+├── update.ts            # self-update via GitHub Releases
 ├── config/              # config.json / credentials / manifest / project-map / paths
 ├── screens/             # Board, Wizard, ProjectsScreen, TankaConfigScreen, …
 ├── modals/  components/  hooks/   # Ink UI
 ├── scheduler/           # cross-platform scheduled-upload
 ├── format.ts  log.ts  theme.ts  text.ts  version.ts
 test/                    # bun:test
+e2e/                     # Docker-based Linux e2e tests (real backend)
+install.sh               # macOS/Linux installer
+install.ps1              # Windows installer (PowerShell)
 ```

@@ -7,14 +7,31 @@ directly; you do **not** need the TUI for any of it.
 
 `tanka-wm` discovers raw coding-agent session transcripts (Claude Code, Codex,
 Cowork) on this machine and syncs them to the Tanka work-memory backend.
-"Fully configured" means: a built CLI on `PATH`, config + credentials written,
+"Fully configured" means: a CLI on `PATH`, config + credentials written,
 and a scheduled job running the upload.
 
 Five steps, in order. Resolve any missing prerequisite before continuing.
 
 ---
 
-## Step 1 — Build & install the CLI
+## Step 1 — Install the CLI
+
+**Option A — install script (recommended):**
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/Shanda-Group-Ltd/tanka-work-memory-cli/dev/install.sh | bash
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/Shanda-Group-Ltd/tanka-work-memory-cli/dev/install.ps1 | iex
+```
+
+The script auto-detects the platform, downloads the binary from GitHub Releases,
+verifies SHA-256 checksum, and installs to `~/.local/bin`. Pin a version with
+`TANKA_WM_VERSION=v1.3.1`, or change the install dir with
+`TANKA_WM_INSTALL_DIR=/usr/local/bin`.
+
+**Option B — build from source:**
 
 ```bash
 cd /path/to/tanka-work-memory-cli
@@ -22,6 +39,9 @@ bun install
 bun run build          # → dist/tanka-wm-<platform> (self-contained; no node/bun to run)
 # install the binary for this machine onto PATH (adjust the platform suffix):
 install -m 755 dist/tanka-wm-darwin-arm64 /usr/local/bin/tanka-wm
+```
+
+```bash
 tanka-wm --version     # verify
 ```
 
@@ -39,7 +59,8 @@ EOF
 chmod 600 ~/.tanka-wm/credentials.json
 ```
 
-Valid environments: `dev`, `test`, `uat`, `prod` (default).
+Only environments compiled into the binary are available. The public release
+includes `prod` only. Internal builds may include `dev`, `test`, `uat`.
 
 ## Step 3 — Pick a mode & write config
 
@@ -134,6 +155,16 @@ A bare `* * * * *` is **rejected** (`unsupported minute field`) — use
 not supported.
 
 ---
+
+## Updating
+
+```bash
+tanka-wm update          # check and install the latest version
+tanka-wm update --check  # check only, don't install
+```
+
+The self-update downloads the matching binary from GitHub Releases, verifies
+SHA-256 checksum, and atomically replaces the running executable.
 
 ## State files
 
