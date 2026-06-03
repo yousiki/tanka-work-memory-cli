@@ -1,0 +1,120 @@
+# tanka-wm — release pipeline: cross-compile 6 self-contained binaries → publish to GitLab Releases.
+#
+# Trigger: tag a commit on the dev branch to release; regular push / MR does not trigger.
+# The tagged commit must be on the dev branch, otherwise the build stage fails
+# (prevents accidental releases from other branches).
+#   git checkout dev
+#   git tag v1.0.0
+#   git push origin v1.0.0
+#
+# How it works:
+#   1) build  — a single oven/bun container cross-compiles all 6 targets via
+#      `bun --compile` (bun cross-compiles from any host, no per-platform runner
+#      needed), artifacts are passed to the next stage.
+#   2) release — PUT the 6 binaries to the project's Generic Package Registry
+#      (auth via CI_JOB_TOKEN, zero config), then create a GitLab Release using
+#      the `release` keyword with assets.links pointing to these package URLs.
+#
+# 6 artifacts (names fixed by scripts/build-binaries.mjs):
+#   tanka-wm-darwin-arm64 / -darwin-x64 / -linux-x64 / -linux-arm64
+#   tanka-wm-windows-x64.exe / -windows-arm64.exe
+
+stages:
+  - build
+  - release
+
+variables:
+  # Generic Package Registry version directory: package name tanka-wm, version = tag name.
+  PACKAGE_REGISTRY_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/tanka-wm/${CI_COMMIT_TAG}"
+  # ── Required CI/CD Variables (configure in Settings > CI/CD > Variables) ──
+  # TANKA_API_URL_PROD  — required, production API base URL
+  # TANKA_API_URL_DEV   — optional, dev env URL (omit to exclude this env from the binary)
+  # TANKA_API_URL_TEST  — optional, test env URL
+  # TANKA_API_URL_UAT   — optional, uat env URL
+
+# Only run the two jobs on tag pushes — reuse one rule.
+.tag-only: &tag-only
+  rules:
+    - if: '$CI_COMMIT_TAG'
+
+build:
+  stage: build
+  image: oven/bun:1          # bun >= 1.3 (engines); pin to a specific version if needed, e.g. oven/bun:1.3
+  <<: *tag-only
+  variables:
+    GIT_DEPTH: "0"           # full history; shallow clones make ancestry checks unreliable
+  before_script:
+    # Only release tags on the dev branch: verify the tagged commit is an ancestor of dev.
+    - command -v git >/dev/null || (apt-get update -qq && apt-get install -y -qq git)
+    - git fetch -q origin dev
+    - |
+      if ! git merge-base --is-ancestor "$CI_COMMIT_SHA" origin/dev; then
+        echo "✗ tag $CI_COMMIT_TAG is not on the dev branch — this pipeline only releases dev branch tags"
+        exit 1
+      fi
+    - echo "✓ tag $CI_COMMIT_TAG is on the dev branch"
+    # package.json is the version source of truth (CLI --version reads it) — tag must match.
+    - |
+      PKG_VERSION=$(bun -e 'console.log(require("./package.json").version)')
+      if [ "${CI_COMMIT_TAG#v}" != "$PKG_VERSION" ]; then
+        echo "✗ tag ${CI_COMMIT_TAG} does not match package.json version ${PKG_VERSION} — align package.json first"
+        exit 1
+      fi
+    - echo "✓ tag matches package.json version $PKG_VERSION, proceeding with build"
+  script:
+    - bun install --frozen-lockfile
+    - bun run typecheck       # type gate: type errors block the release (tsc; bun itself does not type-check)
+    - bun scripts/build-binaries.mjs   # produces all 6 targets into dist/
+    - ls -la dist/
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week
+
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  <<: *tag-only
+  needs:
+    - build                   # cross-stage: fetch build's dist/ artifacts
+  before_script:
+    - apk add --no-cache curl # release-cli is alpine-based and ships without curl
+  script:
+    # PUT binaries + checksums to the Generic Package Registry.
+    - |
+      for f in dist/tanka-wm-* dist/checksums-sha256.txt; do
+        name=$(basename "$f")
+        echo "uploading $name"
+        curl --fail --silent --show-error \
+          --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+          --upload-file "$f" \
+          "${PACKAGE_REGISTRY_URL}/${name}"
+      done
+  # Declarative release: GitLab uses release-cli to create the Release from this block.
+  release:
+    tag_name: '$CI_COMMIT_TAG'
+    name: 'tanka-wm $CI_COMMIT_TAG'
+    description: 'tanka-wm $CI_COMMIT_TAG — self-contained binaries (no node/bun required). Install: download the file for your platform, `chmod +x`, and place it on your PATH.'
+    assets:
+      links:
+        - name: 'macOS · Apple Silicon (tanka-wm-darwin-arm64)'
+          url: '${PACKAGE_REGISTRY_URL}/tanka-wm-darwin-arm64'
+          link_type: package
+        - name: 'macOS · Intel (tanka-wm-darwin-x64)'
+          url: '${PACKAGE_REGISTRY_URL}/tanka-wm-darwin-x64'
+          link_type: package
+        - name: 'Linux · x64 (tanka-wm-linux-x64)'
+          url: '${PACKAGE_REGISTRY_URL}/tanka-wm-linux-x64'
+          link_type: package
+        - name: 'Linux · arm64 (tanka-wm-linux-arm64)'
+          url: '${PACKAGE_REGISTRY_URL}/tanka-wm-linux-arm64'
+          link_type: package
+        - name: 'Windows · x64 (tanka-wm-windows-x64.exe)'
+          url: '${PACKAGE_REGISTRY_URL}/tanka-wm-windows-x64.exe'
+          link_type: package
+        - name: 'Windows · arm64 (tanka-wm-windows-arm64.exe)'
+          url: '${PACKAGE_REGISTRY_URL}/tanka-wm-windows-arm64.exe'
+          link_type: package
+        - name: 'SHA-256 checksums (checksums-sha256.txt)'
+          url: '${PACKAGE_REGISTRY_URL}/checksums-sha256.txt'
+          link_type: other

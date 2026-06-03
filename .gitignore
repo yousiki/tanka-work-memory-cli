@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build output (self-contained binaries)
+dist/
+build/
+*.tsbuildinfo
+
+# bun (bun.lock is committed; this is bun's local cache/runtime dir)
+.bun/
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+
+# Logs & coverage
+*.log
+coverage/
+
+# Work-memory TUI runtime state (config/credentials/manifest live here in dev)
+.work-memory/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/

@@ -1,0 +1,160 @@
+# tanka-work-memory-cli
+
+`tanka-wm` — a single-package bun CLI + Ink TUI that discovers Claude Code /
+Codex / Cowork session transcripts per project and syncs them to Tanka cloud
+storage via the work-memory backend API. See `README.md` for the user-facing
+overview and `AGENT-SETUP.md` for a non-interactive setup procedure.
+
+## Toolchain — bun, not node
+
+Everything runs on **bun**. Do not reach for npm/node/tsx — they were removed
+on purpose.
+
+```bash
+bun install
+bun run dev        # bun src/cli.tsx (TUI from source)
+bun run dev:watch  # restart on change
+bun run typecheck  # tsc --noEmit (bun does NOT type-check)
+bun run lint       # biome check (lint + format, scope = biome.json `files.includes`)
+bun run lint:fix   # biome check --write (auto-fix + format in place)
+bun test           # bun:test runner — NOT node:test
+bun run build      # scripts/build-binaries.mjs → dist/tanka-wm-<platform>
+                   # (bun build --compile, cross-compiles all 4 targets)
+```
+
+- Tests import from `bun:test` (not `node:test`); `node:test` under bun breaks on
+  concurrent async files ("test() inside another test()"). Keep `bun:test`.
+- `@types/bun` + `"types": ["bun", ...]` in tsconfig make tsc accept `bun:test`.
+- The release artifact is the **self-contained binary** (`bun --compile`); the
+  target machine needs neither node nor bun. There is no npm `bin`/dist publish.
+- **Lint/format is Biome** (one tool, not ESLint+Prettier — same reason node was
+  cut). `biome.json` decisions worth knowing before you touch it:
+  - `noNonNullAssertion` is **off** on purpose: tsconfig's
+    `noUncheckedIndexedAccess` makes every `arr[i]` `T | undefined`, so `arr[i]!`
+    is the sanctioned escape hatch — the rule would only fight the tsconfig.
+  - `noArrayIndexKey` is off (the lists are stateless display-only `<Text>`).
+  - `src/discovery/{sessions,transcript}.ts` were once Biome-**excluded** to stay
+    byte-identical to upstream; they have since **forked** into this project and are
+    now linted/formatted like everything else (no `overrides`). `transcript.ts`
+    keeps a top-of-file `// biome-ignore-all lint/suspicious/noExplicitAny` because
+    its transcript JSON is heterogeneous; `sessions.ts` types its probe results
+    instead.
+  - Suppress a real-but-intentional finding with `// biome-ignore lint/<rule>:
+    <reason>` (Biome does **not** honor `// eslint-disable` comments).
+
+## Architecture
+
+### Concept model (aligned with Tanka backend)
+
+- **ProjectCwd** — a working directory entry (`{ id, name, cwd }`).
+- **Project** — the backend project entity (`{ id, remoteProjectId, name,
+  cwdIds, origin }`). In select mode one project has N cwds; in all mode
+  each cwd is its own project (1:1, lazily created on first sync).
+- **Config** — `config.json` holds `cwds: ProjectCwd[]`,
+  `projects?: Project[]`, `deviceId`, `deviceName`, `mode`, `wizardStep`.
+
+### Key modules
+
+- `src/discovery/sessions.ts` + `transcript.ts` — session discovery (Claude
+  Code / Codex / Cowork, cross-platform). `syntheticCwdFor(cwd)` creates
+  virtual ProjectCwd entries for all mode. Both git calls pass
+  `windowsHide: true`.
+- `src/api/` — axios client for the work-memory business endpoints. Uses the
+  **same** base URL as file upload (via `resolveBaseUrl()`, no separate gateway)
+  and only a `token` header (no signing). `client.ts` creates an instance with
+  token header + response envelope unwrapping + 401 → `TokenExpiredError`.
+  `work-memory.ts` wraps 8 endpoints under `/link/workmemory/auth/*` (no
+  `/open` prefix — only the file-upload application uses `/open`).
+- `src/upload/tanka-client.ts` — the two-step file upload protocol (native
+  `fetch` against the `-api` service). Step 1: POST apply → pre-signed URLs.
+  Step 2: PUT files to S3. Returns `transcriptFileId` + `transcriptUrl`.
+- `src/sync.ts` — incremental sync: discover → upload files → POST `/sync`
+  (registers session with the backend). The manifest is updated only after
+  `/sync` succeeds (and only if the response carries no item-level `errors`).
+  Held under an advisory lock (`src/sync-lock.ts`, `~/.tanka-wm/sync.lock`) so
+  a cron run and an interactive sync can't race. All mode lazily creates remote
+  projects via `ensureRemoteProject` and self-heals dropped mappings when a
+  remote project is deleted server-side; select mode pre-validates *created*
+  projects against `listProjects` (paginated). Drives both `tanka-wm sync`
+  (headless cron) and Board's sync actions.
+- `src/config/config.ts` — Config + Credentials persistence.
+  `ensureDeviceIdentity` auto-generates `deviceId` (UUID) and `deviceName`
+  (macOS: `scutil --get ComputerName`; others: `os.hostname()`).
+- `src/config/project-map.ts` — all-mode `cwd → remoteProjectId` mapping
+  (`~/.tanka-wm/project-map/<env>.json`, one file per Tanka env). Keys are
+  case-folded (`foldPath`).
+- `src/config/uploads.ts` — upload manifest sharded per project namespace.
+- `src/scheduler/` — cross-platform scheduled-upload backends behind one
+  `Scheduler` interface: `crontab.ts` (linux), `launchd.ts` (darwin),
+  `schtasks.ts` (win32).
+- TUI: `app.tsx` (wizard ⇄ board), `screens/`, `modals/`, `components/`,
+  `hooks/`.
+
+### Upload protocol
+
+Two stages per session:
+1. **PUT files** — POST `/open/file/upload/application` for pre-signed URLs,
+   then PUT transcript + sidecar files to S3. `groupId` format:
+   `wm-session-${remoteProjectId}-${randomId}`. The pre-signed URL signs
+   `content-disposition;content-length;content-md5;content-type;host` — the
+   PUT must echo every signed header byte-for-byte.
+2. **POST /sync** — `POST /link/workmemory/auth/sync` with the transcript's
+   `fileId` + `objectStorageUri` + session metadata (including `deviceId`,
+   `deviceName`). This establishes the project↔session association on the
+   backend. The manifest records upload only after `/sync` succeeds.
+
+## Run modes (`config.mode`)
+
+- **all** — `discoverAllSessions()` scans the whole machine each run. Each
+  cwd is a project (1:1); remote projects are lazily created on first sync
+  and mapped in `project-map/<env>.json`. Board shows PROJECTS.
+- **select** — user-managed projects via `ProjectsScreen`. Each project has
+  a `remoteProjectId` (from backend `createProject` / user-provided for
+  `joinProject`) and one or more cwds. Board shows PROJECTS + project info.
+
+## Environment & config
+
+- Upload environment is **dev/test/uat/prod** (default prod), chosen in Tanka
+  settings and stored in `credentials.json` alongside the token. **One** set of
+  base URLs (resolved from `TANKA_API_URL_<ENV>` env vars, inlined at compile
+  time via `--define`) serves both file upload and the business API — there is
+  no separate `-gw` gateway and no request signing.
+- State lives under `~/.tanka-wm/` (override `TANKA_WM_HOME`, used by tests):
+  - `config.json` — cwds, projects (each carries `env`), mode, wizardStep,
+    deviceId, deviceName
+  - `credentials.json` 0600 — token + env
+  - `uploads/<env>/<ns>.json` — manifest shards per env per project namespace
+    (`ns` = remoteProjectId); env-isolated so switching env can't cross-contaminate
+  - `project-map/<env>.json` — all-mode cwd→remoteProjectId mapping, one per env
+  - `schedule.json` — installed cron expr echo
+  - `sync.lock` — advisory lock held for the duration of a `runSync`
+
+## Wizard
+
+- 4 steps (select): mode → tanka → projects → cron
+- 3 steps (all): mode → tanka → cron
+- Tanka step: env + token + deviceName (editable) + deviceId (read-only)
+- Projects step (select only): `ProjectsScreen` — create/join/edit/delete/leave
+
+## Board keys (select mode, projects pane focused)
+
+| Key | Action |
+|-----|--------|
+| `a` | add project (create/join) |
+| `e` | edit project |
+| `d` | delete project (origin=created) |
+| `l` | leave project (origin=joined) |
+| `L` | activity log |
+
+## Unfinished
+
+- scheduled upload backends: macOS launchd verified e2e; Windows schtasks and
+  Linux crontab have unit coverage but NOT exercised on real platforms yet.
+- `joinProject` always records `origin: 'joined'`; joining a project you
+  created elsewhere is mislabelled (Board offers leave, not delete). Needs a
+  `creatorUserId` check to self-correct (accepted as-is for now).
+- select-mode pre-validation skips *joined* projects' existence check (the
+  backend `/project/list` may not return joined projects); their deletion only
+  surfaces as a per-session `/sync` failure. Confirm `/project/list` semantics.
+- `bun:test` can't `mkdtemp` under a read-only sandbox — full suite needs write
+  access to the temp dir.

@@ -1,0 +1,162 @@
+import { afterEach, beforeEach, test } from 'bun:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { render } from 'ink-testing-library';
+import type React from 'react';
+
+import { App } from '../src/app';
+import { emptyConfig, loadConfig, saveConfig } from '../src/config/config';
+import { ConfigProvider, type ConfigStore } from '../src/hooks/useConfig';
+import { CronModal } from '../src/modals/CronModal';
+import { HelpModal } from '../src/modals/HelpModal';
+import { LogModal } from '../src/modals/LogModal';
+import { type Nav, NavProvider } from '../src/navigation';
+import { ModeScreen } from '../src/screens/ModeScreen';
+import { TankaConfigScreen } from '../src/screens/TankaConfigScreen';
+
+const delay = (ms: number): Promise<void> =>
+  new Promise((r) => setTimeout(r, ms));
+const noop = (): void => {};
+
+let home: string;
+const API_ENV_VARS: Record<string, string> = {
+  TANKA_API_URL_DEV: 'https://dev.test',
+  TANKA_API_URL_TEST: 'https://test.test',
+  TANKA_API_URL_UAT: 'https://uat.test',
+  TANKA_API_URL_PROD: 'https://prod.test',
+};
+beforeEach(() => {
+  home = mkdtempSync(join(tmpdir(), 'wm-tui-render-'));
+  process.env.TANKA_WM_HOME = home;
+  for (const [k, v] of Object.entries(API_ENV_VARS)) process.env[k] = v;
+});
+afterEach(() => {
+  delete process.env.TANKA_WM_HOME;
+  for (const k of Object.keys(API_ENV_VARS)) delete process.env[k];
+  rmSync(home, { recursive: true, force: true });
+});
+
+function harness(children: React.ReactNode): React.ReactElement {
+  const store: ConfigStore = {
+    config: emptyConfig(),
+    credentials: null,
+    setConfig: noop,
+    setCredentials: noop,
+    restartWizard: noop,
+  };
+  const nav: Nav = { openTranscript: noop, back: noop };
+  return (
+    <ConfigProvider value={store}>
+      <NavProvider value={nav}>{children}</NavProvider>
+    </ConfigProvider>
+  );
+}
+
+test('App boots to the Board once the wizard is done', async () => {
+  saveConfig({ ...emptyConfig(), wizardStep: 'done' });
+  const { lastFrame, unmount } = render(<App checkMode={false} />);
+  await delay(80);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /work-memory/);
+  assert.match(frame, /PROJECTS/);
+  assert.match(frame, /SESSIONS/);
+  unmount();
+});
+
+test('App resumes the wizard at the recorded step', async () => {
+  // mode 'all' + wizardStep 'tanka' → resumes on the Tanka step, which is 2/3 in all mode
+  saveConfig({ ...emptyConfig(), mode: 'all', wizardStep: 'tanka' });
+  const { lastFrame, unmount } = render(<App checkMode={false} />);
+  await delay(80);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /Setup 2\/3/);
+  assert.match(frame, /Tanka settings/);
+  unmount();
+});
+
+test('TankaConfigScreen mounts and renders the form fields', async () => {
+  const { lastFrame, unmount } = render(
+    harness(<TankaConfigScreen onSaved={noop} onCancel={noop} />),
+  );
+  await delay(40);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /Tanka settings/);
+  assert.match(frame, /token/);
+  assert.match(frame, /target/);
+  unmount();
+});
+
+test('CronModal shows a Continue row in wizard mode', async () => {
+  const { lastFrame, unmount } = render(
+    harness(<CronModal onClose={noop} onContinue={noop} />),
+  );
+  await delay(40);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /Scheduled upload/);
+  assert.match(frame, /Continue/);
+  unmount();
+});
+
+test('LogModal mounts', async () => {
+  const { lastFrame, unmount } = render(harness(<LogModal onClose={noop} />));
+  await delay(40);
+  assert.match(lastFrame() ?? '', /Activity log/);
+  unmount();
+});
+
+test('HelpModal lists keybindings with the mode in the subtitle (select)', async () => {
+  const { lastFrame, unmount } = render(
+    harness(<HelpModal onClose={noop} isAll={false} />),
+  );
+  await delay(40);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /switch panel/);
+  assert.match(frame, /select-projects mode/);
+  unmount();
+});
+
+test('HelpModal shows all-sessions mode in the subtitle', async () => {
+  const { lastFrame, unmount } = render(
+    harness(<HelpModal onClose={noop} isAll={true} />),
+  );
+  await delay(40);
+  assert.match(lastFrame() ?? '', /all-sessions mode/);
+  unmount();
+});
+
+test('ModeScreen offers both run modes', async () => {
+  const { lastFrame, unmount } = render(
+    harness(<ModeScreen onPick={noop} onCancel={noop} />),
+  );
+  await delay(40);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /Run mode/);
+  assert.match(frame, /All sessions/);
+  assert.match(frame, /Select projects/);
+  unmount();
+});
+
+test('App starts the wizard at the mode step on a fresh install', async () => {
+  // no config at all → wizard begins at the run-mode step
+  const { lastFrame, unmount } = render(<App checkMode={false} />);
+  await delay(80);
+  assert.match(lastFrame() ?? '', /Run mode/);
+  unmount();
+});
+
+test('w re-runs the wizard as a draft; cancelling leaves config unchanged', async () => {
+  saveConfig({ ...emptyConfig(), mode: 'select', wizardStep: 'done' });
+  const { stdin, lastFrame, unmount } = render(<App checkMode={false} />);
+  await delay(80);
+  const before = JSON.stringify(loadConfig());
+  stdin.write('w'); // enter the re-run wizard (draft)
+  await delay(60);
+  assert.match(lastFrame() ?? '', /Run mode/);
+  stdin.write(String.fromCharCode(27)); // Esc on the mode step → cancel back to the Board
+  await delay(60);
+  assert.equal(JSON.stringify(loadConfig()), before); // nothing was persisted
+  unmount();
+});
