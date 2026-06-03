@@ -177,6 +177,28 @@ case "$RAW_TAB2" in
   *) ok "after remove, crontab marker block is cleared" ;;
 esac
 
+# ── 8. Install script (install.sh) ──────────────────────────────────
+step "8. install.sh (latest version from GitHub Releases)"
+INSTALL_DIR="/tmp/tanka-wm-install-test"
+rm -rf "$INSTALL_DIR"
+
+# The install script is baked into the image at build time
+INSTALL_OUT=$(TANKA_WM_INSTALL_DIR="$INSTALL_DIR" TANKA_WM_NO_MODIFY_PATH=1 \
+  bash /usr/local/bin/install.sh 2>&1) || {
+  printf '%s\n' "$INSTALL_OUT" | sed 's/^/    | /'
+  die "install.sh exited non-zero"
+}
+printf '%s\n' "$INSTALL_OUT" | sed 's/^/    | /'
+assert_contains "$INSTALL_OUT" "checksum verified" "install.sh verifies SHA-256 checksum"
+assert_contains "$INSTALL_OUT" "installed" "install.sh reports successful installation"
+
+[ -x "$INSTALL_DIR/tanka-wm" ] || die "installed binary not found or not executable"
+INSTALLED_VER=$("$INSTALL_DIR/tanka-wm" --version 2>&1) || die "installed binary failed to run"
+assert_contains "$INSTALLED_VER" "tanka-wm" "installed binary runs and prints version"
+ok "install.sh installed $INSTALLED_VER to $INSTALL_DIR"
+
+rm -rf "$INSTALL_DIR"
+
 # ── Summary ─────────────────────────────────────────────────────────
 step "All passed ✅"
 echo "  project:     $PROJECT_NAME ($REMOTE_ID)"

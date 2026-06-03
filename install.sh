@@ -51,7 +51,9 @@ detect_platform() {
 
   PLATFORM="${os}-${arch}"
   ASSET_NAME="tanka-wm-${PLATFORM}"
-  [ "$os" = "windows" ] && ASSET_NAME="${ASSET_NAME}.exe"
+  if [ "$os" = "windows" ]; then
+    ASSET_NAME="${ASSET_NAME}.exe"
+  fi
 }
 
 # ── HTTP helpers (curl preferred, wget fallback) ─────────────────────
@@ -213,7 +215,9 @@ main() {
 
   local install_dir="${TANKA_WM_INSTALL_DIR:-${HOME}/.local/bin}"
   local bin_name="tanka-wm"
-  [ "$(uname -s)" = "MINGW"* ] && bin_name="tanka-wm.exe"
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) bin_name="tanka-wm.exe" ;;
+  esac
   local install_path="${install_dir}/${bin_name}"
 
   # Check for existing installation
@@ -227,9 +231,9 @@ main() {
   mkdir -p "$install_dir" || die "failed to create ${install_dir}"
 
   # Download checksums
-  local tmpdir
-  tmpdir=$(mktemp -d)
-  trap 'rm -rf "$tmpdir"' EXIT
+  TMPDIR_CLEANUP=$(mktemp -d)
+  local tmpdir="$TMPDIR_CLEANUP"
+  trap 'rm -rf "$TMPDIR_CLEANUP"' EXIT
 
   info "downloading checksums…"
   http_get "${DOWNLOAD_BASE}/checksums-sha256.txt" "${tmpdir}/checksums-sha256.txt" \

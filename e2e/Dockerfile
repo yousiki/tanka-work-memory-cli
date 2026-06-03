@@ -17,9 +17,11 @@ RUN apt-get update \
 COPY dist/tanka-wm-linux /usr/local/bin/tanka-wm
 COPY e2e/container-e2e.sh /usr/local/bin/container-e2e.sh
 COPY e2e/container-cron-live.sh /usr/local/bin/container-cron-live.sh
+COPY install.sh /usr/local/bin/install.sh
 RUN chmod 755 /usr/local/bin/tanka-wm \
       /usr/local/bin/container-e2e.sh \
-      /usr/local/bin/container-cron-live.sh
+      /usr/local/bin/container-cron-live.sh \
+      /usr/local/bin/install.sh
 
 # Real token is NOT baked into the image — it is bind-mounted read-only at
 # /seed/credentials.json at runtime; the script copies it and tightens permissions.
