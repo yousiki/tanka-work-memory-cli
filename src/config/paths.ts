@@ -72,3 +72,8 @@ export function projectMapPath(env: TankaEnv): string {
 export function syncLockPath(): string {
   return join(tuiHome(), 'sync.lock');
 }
+
+/** Persists the last auto-update check timestamp to throttle GitHub API calls. */
+export function updateStatePath(): string {
+  return join(tuiHome(), 'update-state.json');
+}

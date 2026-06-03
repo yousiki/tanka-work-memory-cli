@@ -1,20 +1,36 @@
 /**
  * Self-update via GitHub Releases.
  *
- * Checks https://github.com/Shanda-Group-Ltd/tanka-work-memory-cli/releases
- * for a newer version and, if found, downloads the platform-matching binary
- * and replaces the running executable in-place (atomic rename).
+ * Two modes:
+ *   1. Manual: `tanka-wm update` / `tanka-wm update --check`
+ *   2. Auto:   called on every CLI invocation (throttled, non-fatal).
+ *      If an update is found, the binary is replaced and the CLI re-execs
+ *      with the same arguments — the user sees the new version seamlessly.
+ *
+ * Every download is verified against checksums-sha256.txt from the same release.
  */
-import { chmodSync, createWriteStream, renameSync, unlinkSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  chmodSync,
+  createWriteStream,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
+import { updateStatePath } from './config/paths';
 import { WM_TUI_VERSION } from './version';
 
 const GITHUB_OWNER = 'Shanda-Group-Ltd';
 const GITHUB_REPO = 'tanka-work-memory-cli';
 const RELEASES_LATEST_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
+
+const AUTO_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -38,7 +54,6 @@ export interface UpdateCheckResult {
   latest: string;
   hasUpdate: boolean;
   release: ReleaseInfo;
-  /** The asset that matches the current platform, or null if none matches. */
   matchedAsset: ReleaseAsset | null;
 }
 
@@ -47,12 +62,13 @@ export interface DownloadProgress {
   bytesTotal: number | null;
 }
 
+interface UpdateState {
+  lastCheckMs: number;
+  lastVersion: string;
+}
+
 // ── Platform mapping ───────────────────────────────────────────────────────
 
-/**
- * Map Node/Bun process.platform + process.arch → build target key used in the
- * asset filename (e.g. `darwin-arm64`, `windows-x64`).
- */
 function platformKey(): string | null {
   const platform = process.platform === 'win32' ? 'windows' : process.platform;
   const arch = process.arch;
@@ -73,9 +89,6 @@ function stripV(tag: string): string {
   return tag.replace(/^v/, '');
 }
 
-/**
- * Numeric semver comparison. Returns 1 if a > b, -1 if a < b, 0 if equal.
- */
 function cmpSemver(a: string, b: string): number {
   const pa = a.split('.').map(Number);
   const pb = b.split('.').map(Number);
@@ -90,13 +103,30 @@ function cmpSemver(a: string, b: string): number {
 
 // ── Compiled-binary guard ──────────────────────────────────────────────────
 
-/**
- * True when the running process is a compiled tanka-wm binary (not `bun
- * src/cli.tsx`). We refuse to self-update in dev mode to avoid clobbering the
- * Bun runtime itself.
- */
 export function isCompiledBinary(): boolean {
   return basename(process.execPath).startsWith('tanka-wm');
+}
+
+// ── Throttle state ─────────────────────────────────────────────────────────
+
+function loadUpdateState(): UpdateState | null {
+  try {
+    return JSON.parse(readFileSync(updateStatePath(), 'utf8')) as UpdateState;
+  } catch {
+    return null;
+  }
+}
+
+function saveUpdateState(state: UpdateState): void {
+  const p = updateStatePath();
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, `${JSON.stringify(state)}\n`);
+}
+
+function shouldCheck(): boolean {
+  const state = loadUpdateState();
+  if (!state) return true;
+  return Date.now() - state.lastCheckMs >= AUTO_CHECK_INTERVAL_MS;
 }
 
 // ── Core API ───────────────────────────────────────────────────────────────
@@ -145,12 +175,44 @@ export async function checkForUpdate(): Promise<UpdateCheckResult> {
   return { current, latest, hasUpdate, release, matchedAsset };
 }
 
-/**
- * Download the matching asset and atomically replace the running binary.
- *
- * Flow: download → tmp file → rename current → .bak → rename tmp → current
- * → remove .bak. If the rename fails the .bak is kept for manual recovery.
- */
+// ── Checksum verification ──────────────────────────────────────────────────
+
+function releaseDownloadUrl(
+  check: UpdateCheckResult,
+  assetName: string,
+): string {
+  const asset = check.release.assets.find((a) => a.name === assetName);
+  if (!asset) {
+    throw new Error(
+      `asset ${assetName} not found in release ${check.release.tagName}`,
+    );
+  }
+  return asset.downloadUrl;
+}
+
+async function fetchExpectedHash(
+  check: UpdateCheckResult,
+  assetName: string,
+): Promise<string> {
+  const url = releaseDownloadUrl(check, 'checksums-sha256.txt');
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'tanka-wm-updater' },
+  });
+  if (!res.ok)
+    throw new Error(`failed to download checksums: HTTP ${res.status}`);
+  const text = await res.text();
+  const line = text.split('\n').find((l) => l.endsWith(`  ${assetName}`));
+  if (!line)
+    throw new Error(`no checksum for ${assetName} in checksums-sha256.txt`);
+  return line.split(/\s+/)[0]!;
+}
+
+function sha256File(path: string): string {
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+// ── Download + replace ─────────────────────────────────────────────────────
+
 export async function performUpdate(
   check: UpdateCheckResult,
   onProgress?: (p: DownloadProgress) => void,
@@ -166,6 +228,9 @@ export async function performUpdate(
   const binDir = dirname(binPath);
   const tmpPath = join(binDir, `.tanka-wm-update-${process.pid}.tmp`);
   const bakPath = `${binPath}.bak`;
+
+  // Fetch expected checksum before downloading the binary
+  const expectedHash = await fetchExpectedHash(check, check.matchedAsset.name);
 
   const res = await fetch(check.matchedAsset.downloadUrl, {
     headers: { 'User-Agent': 'tanka-wm-updater' },
@@ -200,8 +265,31 @@ export async function performUpdate(
     throw e;
   }
 
+  // Verify checksum
+  const actualHash = sha256File(tmpPath);
+  if (actualHash !== expectedHash) {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      /* best effort */
+    }
+    throw new Error(
+      `checksum mismatch: expected ${expectedHash}, got ${actualHash}`,
+    );
+  }
+
   if (process.platform !== 'win32') {
     chmodSync(tmpPath, 0o755);
+  }
+  if (process.platform === 'darwin') {
+    try {
+      const { execFileSync } = await import('node:child_process');
+      execFileSync('xattr', ['-d', 'com.apple.quarantine', tmpPath], {
+        stdio: 'ignore',
+      });
+    } catch {
+      /* xattr may not exist or attribute not set */
+    }
   }
 
   // Atomic swap
@@ -229,6 +317,38 @@ export async function performUpdate(
   }
 
   return binPath;
+}
+
+// ── Auto-update (called on every CLI invocation) ───────────────────────────
+
+/**
+ * Non-fatal auto-update: check GitHub for a newer version (throttled), download
+ * and replace the binary if found. Returns the new version string if updated,
+ * or null if no update was needed/available. Never throws — any error is
+ * silently swallowed so the CLI proceeds normally.
+ */
+export async function autoUpdate(): Promise<string | null> {
+  try {
+    if (!isCompiledBinary()) return null;
+    if (process.env.TANKA_WM_NO_AUTO_UPDATE === '1') return null;
+    if (!shouldCheck()) return null;
+
+    const check = await checkForUpdate();
+
+    if (!check.hasUpdate || !check.matchedAsset) {
+      saveUpdateState({ lastCheckMs: Date.now(), lastVersion: check.latest });
+      return null;
+    }
+
+    console.error(`updating tanka-wm: ${check.current} → ${check.latest}…`);
+    await performUpdate(check);
+    saveUpdateState({ lastCheckMs: Date.now(), lastVersion: check.latest });
+    console.error(`updated to ${check.latest}`);
+
+    return check.latest;
+  } catch {
+    return null;
+  }
 }
 
 /** Format bytes as human-readable string. */

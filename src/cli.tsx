@@ -23,6 +23,28 @@ import { WM_TUI_VERSION } from './version';
 const argv = process.argv.slice(2);
 const cmd = argv[0];
 
+// ── Auto-update: check + replace + re-exec (skip for --version/--help/update) ──
+if (
+  cmd !== '--version' &&
+  cmd !== '-v' &&
+  cmd !== '--help' &&
+  cmd !== '-h' &&
+  cmd !== 'update'
+) {
+  const { autoUpdate } = await import('./update');
+  const updated = await autoUpdate();
+  if (updated) {
+    // Binary has been replaced — re-exec with the same arguments so the user
+    // runs the new version seamlessly.
+    const { spawnSync } = await import('node:child_process');
+    const result = spawnSync(process.execPath, process.argv.slice(1), {
+      stdio: 'inherit',
+      env: { ...process.env, TANKA_WM_NO_AUTO_UPDATE: '1' },
+    });
+    process.exit(result.status ?? 0);
+  }
+}
+
 if (cmd === '--version' || cmd === '-v') {
   console.log(`tanka-wm ${WM_TUI_VERSION}`);
   process.exit(0);
