@@ -28,7 +28,6 @@ import { computeWindow, moveIndex } from '../components/windowing';
 import {
   type Config,
   DEFAULT_TANKA_ENV,
-  loadCredentials,
   type Project,
   type ProjectCwd,
   projectsForEnv,
@@ -301,7 +300,6 @@ export function ProjectsScreen({
 
     setMode({ ...m, busy: true, error: null });
     try {
-      const credentials = loadCredentials();
       if (!credentials) throw new Error('token not configured');
       const client = createApiClient(credentials);
       const resp = await apiCreate(client, {
@@ -355,7 +353,6 @@ export function ProjectsScreen({
 
     setMode({ ...m, busy: true, error: null });
     try {
-      const credentials = loadCredentials();
       if (!credentials) throw new Error('token not configured');
       const client = createApiClient(credentials);
       await apiJoin(client, remoteId);
@@ -392,7 +389,6 @@ export function ProjectsScreen({
     try {
       const p = projects.find((x) => x.id === m.projectId);
       if (!p) throw new Error('project not found');
-      const credentials = loadCredentials();
       if (!credentials) throw new Error('token not configured');
       const client = createApiClient(credentials);
       await apiDelete(client, p.remoteProjectId);
@@ -416,7 +412,6 @@ export function ProjectsScreen({
     try {
       const p = projects.find((x) => x.id === m.projectId);
       if (!p) throw new Error('project not found');
-      const credentials = loadCredentials();
       if (!credentials) throw new Error('token not configured');
       const client = createApiClient(credentials);
       await apiLeave(client, p.remoteProjectId);
