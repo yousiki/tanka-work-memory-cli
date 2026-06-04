@@ -34,10 +34,11 @@ if (
   const { autoUpdate } = await import('./update');
   const updated = await autoUpdate();
   if (updated) {
-    // Binary has been replaced — re-exec with the same arguments so the user
-    // runs the new version seamlessly.
+    // Binary has been replaced — re-exec with the user's original arguments.
+    // Use `argv` (process.argv.slice(2)) which is already parsed above and
+    // works consistently across bun compile's argv conventions.
     const { spawnSync } = await import('node:child_process');
-    const result = spawnSync(process.execPath, process.argv.slice(1), {
+    const result = spawnSync(process.execPath, argv, {
       stdio: 'inherit',
       env: { ...process.env, TANKA_WM_NO_AUTO_UPDATE: '1' },
     });
