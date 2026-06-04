@@ -199,6 +199,40 @@ ok "install.sh installed $INSTALLED_VER to $INSTALL_DIR"
 
 rm -rf "$INSTALL_DIR"
 
+# ── 9. Auto-update (install old version, run command, verify upgrade) ──
+step "9. auto-update (install v1.3.5 → run cron status → expect upgrade to latest)"
+AUTO_DIR="/tmp/tanka-wm-auto-update-test"
+rm -rf "$AUTO_DIR"
+
+# Install a known older version that has the auto-update feature
+INSTALL_OUT=$(TANKA_WM_VERSION=v1.3.5 TANKA_WM_INSTALL_DIR="$AUTO_DIR" TANKA_WM_NO_MODIFY_PATH=1 \
+  bash /usr/local/bin/install.sh 2>&1) || {
+  printf '%s\n' "$INSTALL_OUT" | sed 's/^/    | /'
+  die "install.sh (v1.3.5) exited non-zero"
+}
+OLD_VER=$("$AUTO_DIR/tanka-wm" --version 2>&1)
+assert_contains "$OLD_VER" "1.3.5" "installed old version 1.3.5"
+
+# Clear any throttle state so auto-update triggers immediately
+rm -f "$TANKA_WM_HOME/update-state.json"
+
+# Run a command — auto-update should kick in, upgrade, then re-exec the command
+AUTO_OUT=$("$AUTO_DIR/tanka-wm" cron status 2>&1); AUTO_RC=$?
+printf '%s\n' "$AUTO_OUT" | sed 's/^/    | /'
+[ $AUTO_RC -eq 0 ] || die "auto-update + re-exec exited non-zero (rc=$AUTO_RC)"
+assert_contains "$AUTO_OUT" "updating tanka-wm" "auto-update detected and started"
+assert_contains "$AUTO_OUT" "not installed" "re-exec'd command (cron status) ran successfully"
+
+# Verify the binary on disk is now the latest
+NEW_VER=$("$AUTO_DIR/tanka-wm" --version 2>&1)
+info "version after auto-update: $NEW_VER"
+case "$NEW_VER" in
+  *1.3.5*) die "binary still at 1.3.5 after auto-update" ;;
+  *) ok "binary upgraded from 1.3.5 to $NEW_VER" ;;
+esac
+
+rm -rf "$AUTO_DIR"
+
 # ── Summary ─────────────────────────────────────────────────────────
 step "All passed ✅"
 echo "  project:     $PROJECT_NAME ($REMOTE_ID)"
