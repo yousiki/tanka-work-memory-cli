@@ -233,6 +233,37 @@ esac
 
 rm -rf "$AUTO_DIR"
 
+# ── 10. Auto-update with sync (the cron job scenario) ──────────────
+step "10. auto-update + sync (install v1.3.5 → run sync → expect upgrade + sync executes)"
+AUTO_DIR="/tmp/tanka-wm-auto-update-test"
+rm -rf "$AUTO_DIR"
+
+INSTALL_OUT=$(TANKA_WM_VERSION=v1.3.5 TANKA_WM_INSTALL_DIR="$AUTO_DIR" TANKA_WM_NO_MODIFY_PATH=1 \
+  bash /usr/local/bin/install.sh 2>&1) || {
+  printf '%s\n' "$INSTALL_OUT" | sed 's/^/    | /'
+  die "install.sh (v1.3.5) exited non-zero"
+}
+OLD_VER=$("$AUTO_DIR/tanka-wm" --version 2>&1)
+assert_contains "$OLD_VER" "1.3.5" "installed old version 1.3.5 for sync test"
+
+rm -f "$TANKA_WM_HOME/update-state.json"
+
+# Run sync — should auto-update first, then re-exec sync which uploads/skips
+SYNC_AUTO=$("$AUTO_DIR/tanka-wm" sync "$REMOTE_ID" 2>&1); SYNC_RC=$?
+printf '%s\n' "$SYNC_AUTO" | sed 's/^/    | /'
+[ $SYNC_RC -eq 0 ] || die "auto-update + sync exited non-zero (rc=$SYNC_RC)"
+assert_contains "$SYNC_AUTO" "updating tanka-wm" "auto-update triggered before sync"
+assert_contains "$SYNC_AUTO" "up-to-date" "re-exec'd sync completed (session already uploaded)"
+
+NEW_VER=$("$AUTO_DIR/tanka-wm" --version 2>&1)
+info "version after auto-update + sync: $NEW_VER"
+case "$NEW_VER" in
+  *1.3.5*) die "binary still at 1.3.5 after auto-update" ;;
+  *) ok "binary upgraded and sync completed successfully" ;;
+esac
+
+rm -rf "$AUTO_DIR"
+
 # ── Summary ─────────────────────────────────────────────────────────
 step "All passed ✅"
 echo "  project:     $PROJECT_NAME ($REMOTE_ID)"
