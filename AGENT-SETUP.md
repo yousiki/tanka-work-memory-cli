@@ -26,9 +26,7 @@ irm https://raw.githubusercontent.com/Shanda-Group-Ltd/tanka-work-memory-cli/dev
 ```
 
 The script auto-detects the platform, downloads the binary from GitHub Releases,
-verifies SHA-256 checksum, and installs to `~/.local/bin`. Pin a version with
-`TANKA_WM_VERSION=v1.3.7`, or change the install dir with
-`TANKA_WM_INSTALL_DIR=/usr/local/bin`.
+verifies SHA-256 checksum, and installs to `~/.local/bin`.
 
 After installation, verify the binary works:
 
@@ -40,22 +38,29 @@ If the command is not found, ensure `~/.local/bin` is in your `PATH` (the
 installer will have prompted or auto-added it — you may need to restart your
 shell).
 
-## Step 2 — Write the token + environment
+## Step 2 — Configure credentials and device name
 
-Obtain the raw apiKey from `/open/auth/mcp/api-key/work-memory`, then write it
-plus the target `env` (0600) under `~/.tanka-wm/` (or `$TANKA_WM_HOME`):
+Ask the user for two things:
+
+1. **API Token** — tell the user: open the **Tanka** app → go to **Link** →
+   find the **AI Work Memory** section → click the **API Key** tab → generate
+   a new key and paste it here.
+
+2. **Device name** — ask the user what they'd like to call this machine
+   (e.g. "Brian's MacBook", "work-laptop"). This label appears in the backend
+   to identify which device uploaded a session. If they don't care, use the
+   machine hostname.
+
+Then write the credentials and seed the config with the device name:
 
 ```bash
 mkdir -p ~/.tanka-wm
 umask 177
 cat > ~/.tanka-wm/credentials.json <<'EOF'
-{ "token": "mcp_sk_xxxxxxxxxxxxxxxxxxxx", "env": "prod" }
+{ "token": "<PASTE_TOKEN_HERE>", "env": "prod" }
 EOF
 chmod 600 ~/.tanka-wm/credentials.json
 ```
-
-Only environments compiled into the binary are available. The public release
-includes `prod` only. Internal builds may include `dev`, `test`, `uat`.
 
 ## Step 3 — Pick a mode
 
@@ -64,15 +69,18 @@ coding-agent session on the machine automatically with zero configuration.
 
 ### If the user chooses "all" mode (recommended)
 
-Write the config and proceed to Step 4:
+Write the config and proceed to Step 4. Replace `<DEVICE_NAME>` with the name
+from Step 2:
 
 ```bash
-cat > ~/.tanka-wm/config.json <<'EOF'
+cat > ~/.tanka-wm/config.json <<EOF
 {
   "version": 1,
   "mode": "all",
   "wizardStep": "done",
-  "cwds": []
+  "cwds": [],
+  "deviceId": "$(uuidgen | tr '[:upper:]' '[:lower:]')",
+  "deviceName": "<DEVICE_NAME>"
 }
 EOF
 ```
@@ -81,45 +89,42 @@ EOF
 
 **Stop the agent-driven setup here.** Select mode requires interactive project
 management (create/join projects, assign working directories) which is best
-done through the TUI. Tell the user:
-
-> Select mode requires interactive configuration. Please run `tanka-wm` to
-> launch the TUI — the setup wizard will guide you through creating or joining
-> projects and assigning working directories. Once the wizard completes, come
-> back and we'll set up the scheduled sync (Step 5).
-
-Write a minimal config so the TUI starts the wizard at the right step:
+done through the TUI. Write a minimal config to start the wizard:
 
 ```bash
-cat > ~/.tanka-wm/config.json <<'EOF'
+cat > ~/.tanka-wm/config.json <<EOF
 {
   "version": 1,
   "mode": "select",
   "wizardStep": "tanka",
-  "cwds": []
+  "cwds": [],
+  "deviceId": "$(uuidgen | tr '[:upper:]' '[:lower:]')",
+  "deviceName": "<DEVICE_NAME>"
 }
 EOF
 ```
 
-Then skip to Step 5 after the user confirms the TUI wizard is done.
+Then tell the user:
 
-## Step 4 — Verify (all mode only)
+> Run `tanka-wm` to launch the TUI. The setup wizard will walk you through
+> verifying the token, creating or joining projects, assigning directories,
+> and setting up a scheduled sync — all in one flow.
+
+The wizard covers all remaining steps (token verification, project setup,
+and cron scheduling), so the agent setup is complete here.
+
+## Step 4 — Verify and schedule (all mode only)
 
 ```bash
-tanka-wm --check   # smoke-test: render one TUI frame and exit 0; also auto-generates deviceId + deviceName
-tanka-wm sync      # uploads new/changed sessions; lazily creates remote projects for each discovered cwd
+tanka-wm --check   # smoke-test: render one TUI frame and exit 0
+tanka-wm sync      # upload new/changed sessions; lazily creates remote projects for each discovered cwd
 ```
 
-`--check` and `sync` both call `ensureDeviceIdentity`, which generates a stable
-`deviceId` (UUID) and `deviceName` (hostname) on first run. No need to set
-them manually. `deviceName` is editable later in the TUI via Tanka settings (`t`).
-
-## Step 5 — Schedule the sync
+Then set up the scheduled sync:
 
 ```bash
 tanka-wm cron install "0 */4 * * *"   # every 4 hours (default)
 tanka-wm cron status                  # verify
-tanka-wm cron remove                  # uninstall the job
 ```
 
 The `tanka-wm cron` subcommand maps to the OS scheduler automatically: **cron**
@@ -136,10 +141,6 @@ Recognised shapes:
 | `M */N * * *` | every N hours (minute offset dropped) |
 | `M * * * *`   | every hour at minute M |
 | `M H * * *`   | daily at H:M |
-
-A bare `* * * * *` is **rejected** (`unsupported minute field`) — use
-`*/1 * * * *` for every-minute. Specific weekdays / months / days-of-month are
-not supported.
 
 ---
 
@@ -171,5 +172,5 @@ Disable with `TANKA_WM_NO_AUTO_UPDATE=1`.
   sessions re-upload. The upload is complete only after `/sync` API succeeds.
 - **401 handling**: token can expire. On 401, re-fetch the apiKey and overwrite
   `credentials.json`.
-- **deviceId/deviceName**: auto-generated on first `--check` or `sync` run.
-  `deviceName` is editable in the TUI via Tanka settings (`t`).
+- **deviceId/deviceName**: set in Step 3. `deviceName` is editable later in
+  the TUI via Tanka settings (`t`).
