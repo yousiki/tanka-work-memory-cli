@@ -61,6 +61,48 @@ cat > ~/.tanka-wm/credentials.json <<'EOF'
 EOF
 chmod 600 ~/.tanka-wm/credentials.json
 ```
+### 2.5 [Interlude] Environment Pre-check: Task Scheduling Service (Linux / WSL Only)
+
+The background scheduling mechanism of the Agent relies on the native `cron` daemon for task execution on **Linux-based systems**. 
+
+*(Note: Windows and macOS environments utilize their own native scheduling systems and do not require this `cron` configuration.)*
+
+If you are deploying on Linux or WSL, please verify that your `cron` service is active before proceeding to Step 3:
+
+#### For Native Linux Environments
+Check the status of the `cron` service:
+
+```bash
+# Ubuntu / Debian
+sudo systemctl status cron
+
+# CentOS / RHEL
+sudo systemctl status crond
+```
+
+If the service is `inactive (dead)`, start and enable it to run on boot:
+
+```bash
+sudo systemctl enable --now cron  # Use 'crond' for CentOS/RHEL
+```
+
+#### For WSL (Windows Subsystem for Linux) Environments
+WSL handles background daemons differently than native servers. Please ensure the following configurations are set:
+
+1. **Verify `systemd` is enabled**
+   Some older or minimal WSL distributions do not have `systemd` enabled by default. Check if your `/etc/wsl.conf` file contains the following block:
+   ```ini
+   [boot]
+   systemd=true
+   ```
+   *Note: If you just added this configuration, you must completely restart the WSL instance by executing `wsl --shutdown` in your Windows host terminal before it takes effect.*
+
+2. **Enable `cron` auto-start**
+   Once `systemd` is active, manually start the scheduling service and enable it to run on boot:
+   ```bash
+   sudo systemctl enable --now cron
+   ```
+   You only need to execute this once. The `cron` service will now automatically initialize in the background whenever WSL starts.
 
 ## Step 3 — Pick a mode
 
