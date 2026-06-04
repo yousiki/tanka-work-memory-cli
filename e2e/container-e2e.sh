@@ -139,8 +139,8 @@ printf '%s\n' "$SYNC1" | sed 's/^/    | /'
 [ $SYNC1_RC -eq 0 ] || die "sync exited non-zero (rc=${SYNC1_RC})"
 assert_contains "$SYNC1" "1 uploaded" "first sync uploaded 1 session"
 
-# After a successful upload, the manifest shard should be written (namespace = remoteProjectId)
-MANIFEST="$TANKA_WM_HOME/uploads/$REMOTE_ID.json"
+# After a successful upload, the manifest shard should be written (uploads/<env>/<projectId>.json)
+MANIFEST="$TANKA_WM_HOME/uploads/$ENVNAME/$REMOTE_ID.json"
 [ -f "$MANIFEST" ] || die "manifest not written: $MANIFEST"
 jq -e --arg sid "$SESSION_ID" '.[$sid] // empty' "$MANIFEST" >/dev/null \
   && ok "manifest records session $SESSION_ID" \

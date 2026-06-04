@@ -62,7 +62,7 @@ TS=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
 } > "$CC_DIR/$SESSION_ID.jsonl"
 ok "session ${SESSION_ID} (not yet uploaded)"
 
-MANIFEST="$TANKA_WM_HOME/uploads/$REMOTE_ID.json"
+MANIFEST="$TANKA_WM_HOME/uploads/$ENVNAME/$REMOTE_ID.json"
 [ -f "$MANIFEST" ] && die "manifest should not exist yet"
 : > "$LOG"   # clear the log: any sync lines appearing afterward must come from the cron trigger
 info "wm.log cleared; manifest does not exist yet — clean baseline before trigger"
