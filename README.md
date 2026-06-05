@@ -113,6 +113,43 @@ tanka-wm update --check       # check for updates without installing
 tanka-wm --version | --help
 ```
 
+### Cron prerequisite (Linux / WSL only)
+
+The `tanka-wm cron` subcommand relies on the native `cron` daemon on
+Linux-based systems. macOS uses a per-user LaunchAgent and Windows uses Task
+Scheduler — neither requires extra setup.
+
+**Native Linux:**
+
+```bash
+# Ubuntu / Debian
+sudo systemctl status cron
+
+# CentOS / RHEL
+sudo systemctl status crond
+```
+
+If `inactive (dead)`, start and enable it:
+
+```bash
+sudo systemctl enable --now cron   # 'crond' for CentOS/RHEL
+```
+
+**WSL (Windows Subsystem for Linux):**
+
+1. Ensure `systemd` is enabled — check `/etc/wsl.conf` contains:
+   ```ini
+   [boot]
+   systemd=true
+   ```
+   If you just added this, restart WSL with `wsl --shutdown` from the Windows
+   host terminal.
+
+2. Start and enable `cron`:
+   ```bash
+   sudo systemctl enable --now cron
+   ```
+
 ### TUI keys
 
 | Key | Action |
