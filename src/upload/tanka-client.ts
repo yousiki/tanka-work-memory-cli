@@ -27,7 +27,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
 import { TANKA_ENVS, type TankaEnv } from '../config/config';
-import type { SessionRef } from '../discovery/sessions';
+import type { SessionRef, SidecarFile } from '../discovery/sessions';
 
 /**
  * API base URL resolution via environment variables.
@@ -39,6 +39,8 @@ import type { SessionRef } from '../discovery/sessions';
  */
 const APPLY_PATH = '/open/file/upload/application';
 const MODULE = 'memory-work';
+// backend caps /sync sessions[] at 500; keep apply batches aligned (see SYNC_BATCH_SIZE in sync.ts)
+const APPLY_BATCH_SIZE = 300;
 
 function envUrls(): Record<TankaEnv, string | undefined> {
   return {
@@ -171,10 +173,13 @@ function buildItem(
   };
 }
 
-function collectItems(ref: SessionRef): FileItem[] {
+function collectItems(
+  ref: SessionRef,
+  sidecars?: readonly SidecarFile[],
+): FileItem[] {
   const items: FileItem[] = [];
   items.push(buildItem(ref.id, 'transcript.jsonl', readFileSync(ref.path)));
-  for (const f of ref.sidecarFiles) {
+  for (const f of sidecars ?? ref.sidecarFiles) {
     if (f.sizeBytes <= 0) continue;
     items.push(buildItem(ref.id, f.relPath, readFileSync(f.absPath)));
   }
@@ -236,16 +241,30 @@ async function applyUpload(
   return files;
 }
 
-function targetForIndex(
+async function applyUploadBatched(
+  token: string,
+  env: TankaEnv,
+  groupId: string,
   items: FileItem[],
-  targets: ApplyRespFile[],
-  i: number,
-): ApplyRespFile {
-  const item = items[i]!;
-  const byId = targets.find(
-    (t) => t.localId != null && t.localId === item.relPath,
-  );
-  return byId ?? targets[i]!;
+): Promise<Map<string, ApplyRespFile>> {
+  const targetMap = new Map<string, ApplyRespFile>();
+  for (let i = 0; i < items.length; i += APPLY_BATCH_SIZE) {
+    const chunk = items.slice(i, i + APPLY_BATCH_SIZE);
+    const batchTargets = await applyUpload(token, env, groupId, chunk);
+    for (let j = 0; j < chunk.length; j++) {
+      const item = chunk[j]!;
+      const target = batchTargets.find(
+        (t) => t.localId != null && t.localId === item.relPath,
+      );
+      if (!target) {
+        throw new Error(
+          `upload application returned no matching target for ${item.relPath}`,
+        );
+      }
+      targetMap.set(item.relPath, target);
+    }
+  }
+  return targetMap;
 }
 
 async function putBytes(target: ApplyRespFile, item: FileItem): Promise<void> {
@@ -283,6 +302,8 @@ async function safeText(resp: Response): Promise<string> {
  * POST /sync. Throws TokenExpiredError on 401.
  *
  * @param remoteProjectId — backend project nanoid, used for the groupId prefix
+ * @param deltaSidecars — when provided, only these sidecar files are uploaded
+ *   (the caller computed the delta via `sidecarDelta`); omit to upload all.
  */
 export async function uploadSession(
   token: string,
@@ -290,19 +311,19 @@ export async function uploadSession(
   ref: SessionRef,
   onProgress: (p: UploadProgress) => void,
   remoteProjectId: string,
+  deltaSidecars?: readonly SidecarFile[],
 ): Promise<UploadOutcome> {
-  const items = collectItems(ref);
+  const items = collectItems(ref, deltaSidecars);
   const total = items.length;
   const groupId = groupIdFor(remoteProjectId);
-  const targets = await applyUpload(token, env, groupId, items);
+  const targetMap = await applyUploadBatched(token, env, groupId, items);
 
   let done = 0;
   let sizeBytes = 0;
   const files: UploadedFile[] = [];
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i]!;
+  for (const item of items) {
     onProgress({ label: item.relPath, done, total });
-    const target = targetForIndex(items, targets, i);
+    const target = targetMap.get(item.relPath)!;
     await putBytes(target, item);
     sizeBytes += item.contentLength;
     files.push({

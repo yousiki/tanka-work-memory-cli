@@ -20,7 +20,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import type { SessionRef } from '../discovery/sessions';
+import type { SessionRef, SidecarFile } from '../discovery/sessions';
 
 import type { TankaEnv } from './config';
 import { projectManifestPath, uploadsDir } from './paths';
@@ -37,6 +37,8 @@ export interface UploadRecord {
   /** transcript mtime/size at upload time — the cheap change-detection signal */
   transcriptMtimeMs: number;
   transcriptSizeBytes: number;
+  /** per-sidecar mtime+size snapshot for fine-grained delta detection */
+  sidecars?: Record<string, { mtimeMs: number; sizeBytes: number }>;
 }
 
 /** new = never uploaded · changed = transcript moved since upload · current = up to date */
@@ -242,4 +244,46 @@ export function uploadStatus(
     return 'changed';
   }
   return 'current';
+}
+
+/**
+ * Return sidecar files that are new or changed since the last successful sync.
+ * Compares mtime + size (same precision as transcript detection). Falls back to
+ * "all are new" when no prior snapshot exists (first sync or pre-upgrade record).
+ */
+export function sidecarDelta(
+  manifest: UploadManifest,
+  projectId: string,
+  sessionId: string,
+  currentSidecars: readonly SidecarFile[],
+): SidecarFile[] {
+  const rec = manifest.entries[manifestKey(projectId, sessionId)];
+  const recorded = rec?.sidecars;
+  if (!recorded) return [...currentSidecars];
+  return currentSidecars.filter((f) => {
+    const snap = recorded[f.relPath];
+    return (
+      !snap ||
+      snap.mtimeMs !== Math.round(f.mtimeMs) ||
+      snap.sizeBytes !== f.sizeBytes
+    );
+  });
+}
+
+/**
+ * Snapshot ALL current sidecar files for manifest storage. Called with the full
+ * `ref.sidecarFiles` (not the delta) so that deleted files are automatically
+ * pruned from the record.
+ */
+export function buildSidecarSnapshot(
+  files: readonly SidecarFile[],
+): Record<string, { mtimeMs: number; sizeBytes: number }> {
+  const snap: Record<string, { mtimeMs: number; sizeBytes: number }> = {};
+  for (const f of files) {
+    snap[f.relPath] = {
+      mtimeMs: Math.round(f.mtimeMs),
+      sizeBytes: f.sizeBytes,
+    };
+  }
+  return snap;
 }

@@ -32,11 +32,13 @@ import {
   recordProjectMapping,
 } from './config/project-map';
 import {
+  buildSidecarSnapshot,
   dropProjectManifest,
   loadManifest,
   pruneManifest,
   reconcileManifest,
   recordUpload,
+  sidecarDelta,
   uploadStatus,
 } from './config/uploads';
 import {
@@ -91,6 +93,9 @@ export interface SyncOptions {
 }
 
 const DEFAULT_LOOKBACK_DAYS = 14;
+// backend caps /sync sessions[] at 500; stay well under (see APPLY_BATCH_SIZE in tanka-client.ts)
+const SYNC_BATCH_SIZE = 300;
+const SYNC_MAX_RETRIES = 3;
 
 async function ensureRemoteProject(
   client: AxiosInstance,
@@ -170,6 +175,53 @@ function buildSyncItems(
       objectStorageUri: f.url,
     };
   });
+}
+
+/**
+ * POST /sync in batches of SYNC_BATCH_SIZE with per-batch retry. Throws on
+ * any batch failure after SYNC_MAX_RETRIES attempts — the caller treats the
+ * entire session as failed and does not update the manifest.
+ */
+async function syncBatched(
+  client: AxiosInstance,
+  projectId: string,
+  items: SyncSessionItem[],
+): Promise<void> {
+  for (let i = 0; i < items.length; i += SYNC_BATCH_SIZE) {
+    const chunk = items.slice(i, i + SYNC_BATCH_SIZE);
+    const batchNum = Math.floor(i / SYNC_BATCH_SIZE) + 1;
+    let lastError: Error | undefined;
+    for (let attempt = 1; attempt <= SYNC_MAX_RETRIES; attempt++) {
+      try {
+        const syncResp = await syncProject(client, projectId, {
+          lookbackDays: DEFAULT_LOOKBACK_DAYS,
+          sessions: chunk,
+        });
+        if (Array.isArray(syncResp?.errors) && syncResp.errors.length > 0) {
+          throw new Error(
+            `backend reported ${syncResp.errors.length} item error(s): ${JSON.stringify(
+              syncResp.errors,
+            ).slice(0, 200)}`,
+          );
+        }
+        lastError = undefined;
+        break;
+      } catch (e: unknown) {
+        if (e instanceof TokenExpiredError) throw e;
+        lastError = e instanceof Error ? e : new Error(String(e));
+        if (attempt < SYNC_MAX_RETRIES) {
+          const delayMs = 1000 * 2 ** (attempt - 1);
+          log(
+            'warn',
+            'sync',
+            `sync batch ${batchNum} attempt ${attempt} failed: ${lastError.message} — retrying in ${delayMs}ms`,
+          );
+          await new Promise((r) => setTimeout(r, delayMs));
+        }
+      }
+    }
+    if (lastError) throw lastError;
+  }
 }
 
 /**
@@ -313,6 +365,13 @@ async function runSyncLocked(opts: SyncOptions): Promise<SyncResult> {
       ...pCtx,
     });
     try {
+      const delta = sidecarDelta(
+        manifest,
+        remoteProjectId,
+        ref.id,
+        ref.sidecarFiles,
+      );
+
       const outcome = await uploadSession(
         token,
         env,
@@ -328,24 +387,11 @@ async function runSyncLocked(opts: SyncOptions): Promise<SyncResult> {
             ...pCtx,
           }),
         remoteProjectId,
+        delta,
       );
 
       const syncItems = buildSyncItems(ref, outcome, deviceId, deviceName);
-      const syncResp = await syncProject(apiClient, remoteProjectId, {
-        lookbackDays: DEFAULT_LOOKBACK_DAYS,
-        sessions: syncItems,
-      });
-      // The envelope code===0 interceptor only catches transport-level failures.
-      // A code===0 response can still carry item-level errors; if any are present
-      // we must NOT record the manifest (it would mark a partially-failed session
-      // as synced). Throw to reuse the catch path → counted failed, retried next run.
-      if (Array.isArray(syncResp?.errors) && syncResp.errors.length > 0) {
-        throw new Error(
-          `backend reported ${syncResp.errors.length} item error(s): ${JSON.stringify(
-            syncResp.errors,
-          ).slice(0, 200)}`,
-        );
-      }
+      await syncBatched(apiClient, remoteProjectId, syncItems);
 
       manifest = recordUpload(env, manifest, {
         projectId: remoteProjectId,
@@ -356,14 +402,16 @@ async function runSyncLocked(opts: SyncOptions): Promise<SyncResult> {
         sizeBytes: outcome.sizeBytes,
         transcriptMtimeMs: Math.round(ref.mtimeMs),
         transcriptSizeBytes: ref.sizeBytes,
+        sidecars: buildSidecarSnapshot(ref.sidecarFiles),
       });
       result.uploaded += 1;
       log(
         'info',
         'sync',
-        `synced ${remoteProjectId}/${ref.id} (${outcome.fileCount} files)`,
+        `synced ${remoteProjectId}/${ref.id} (${outcome.fileCount} files, ${ref.sidecarFiles.length - delta.length} unchanged sidecars skipped)`,
       );
     } catch (e: unknown) {
+      if (e instanceof TokenExpiredError) throw e;
       const msg = e instanceof Error ? e.message : String(e);
       result.failed += 1;
       result.errors.push(`${remoteProjectId}/${ref.id}: ${msg}`);
@@ -434,7 +482,7 @@ async function runSyncLocked(opts: SyncOptions): Promise<SyncResult> {
           if (!rid) return true;
           return uploadStatus(manifest, rid, r) !== 'current';
         });
-    result.skipped += refs.length - pending.length;
+    if (!opts.sessionId) result.skipped += refs.length - pending.length;
 
     // Group by cwd for lazy project creation + progress
     const byCwd = new Map<string, SessionRef[]>();
@@ -469,6 +517,7 @@ async function runSyncLocked(opts: SyncOptions): Promise<SyncResult> {
       try {
         remoteId = await ensureRemoteProject(apiClient, env, cwd, displayName);
       } catch (e: unknown) {
+        if (e instanceof TokenExpiredError) throw e;
         const msg = e instanceof Error ? e.message : String(e);
         log(
           'error',
@@ -551,7 +600,7 @@ async function runSyncLocked(opts: SyncOptions): Promise<SyncResult> {
             (r) =>
               uploadStatus(manifest, project.remoteProjectId, r) !== 'current',
           );
-      result.skipped += refs.length - pending.length;
+      if (!opts.sessionId) result.skipped += refs.length - pending.length;
       log(
         'info',
         'sync',

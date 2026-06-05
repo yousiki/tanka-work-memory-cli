@@ -93,10 +93,11 @@ const TOAST_MS = 4000;
 
 function syncResultToast(title: string, r: SyncResult): Toast {
   const lines: string[] = [];
-  if (r.uploaded > 0) lines.push(`${r.uploaded} uploaded`);
-  if (r.skipped > 0) lines.push(`${r.skipped} up-to-date`);
-  if (r.failed > 0) lines.push(`${r.failed} failed`);
-  if (r.cleaned > 0) lines.push(`${r.cleaned} cleaned`);
+  const s = (n: number) => (n === 1 ? 'session' : 'sessions');
+  if (r.uploaded > 0) lines.push(`${r.uploaded} ${s(r.uploaded)} uploaded`);
+  if (r.skipped > 0) lines.push(`${r.skipped} ${s(r.skipped)} up-to-date`);
+  if (r.failed > 0) lines.push(`${r.failed} ${s(r.failed)} failed`);
+  if (r.cleaned > 0) lines.push(`${r.cleaned} ${s(r.cleaned)} cleaned`);
   if (r.lockSkipped) lines.push('skipped (another sync running)');
   if (lines.length === 0) lines.push('nothing to do');
   for (const e of r.errors.slice(0, 3)) lines.push(`  ${e}`);
