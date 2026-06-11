@@ -59,7 +59,12 @@ export function CronModal({
     // the wizard and the Board's cron modal (they share this component).
     return matched >= 0 ? matched : DEFAULT_PRESET;
   });
-  const [focus, setFocus] = useState(0);
+  // wizard mode lands on the action the user most likely wants next: Install
+  // when nothing is scheduled yet, Continue when a schedule already exists
+  // (e.g. re-running the wizard). The Board's modal keeps the binary field.
+  const [focus, setFocus] = useState(() =>
+    onContinue ? (status.installed ? 4 : 2) : 0,
+  );
   const [msg, setMsg] = useState<{ text: string; tone: 'ok' | 'err' } | null>(
     null,
   );
@@ -143,17 +148,6 @@ export function CronModal({
       }
     >
       <Box flexDirection="column">
-        <Box marginBottom={1}>
-          <Text color={status.installed ? theme.ok : theme.dim}>
-            {status.installed ? '● ' : '○ '}
-          </Text>
-          <Text color={theme.dim}>
-            {status.installed
-              ? `installed — ${status.expr ?? 'on'}`
-              : 'not scheduled'}
-          </Text>
-        </Box>
-
         {!available ? (
           <Text color={theme.err}>
             {`system scheduler (${kind}) is not available on this machine.`}
@@ -198,8 +192,22 @@ export function CronModal({
                 Remove schedule
               </Text>
             </Box>
+            {/* paddingLeft matches the 2-char `marker()` gutter on the rows above */}
+            <Box flexDirection="column" marginTop={1} paddingLeft={2}>
+              <Text bold color={status.installed ? theme.ok : theme.warn}>
+                {status.installed
+                  ? `● installed — ${status.expr ?? 'on'}`
+                  : '○ not scheduled'}
+              </Text>
+              {!status.installed ? (
+                <Text color={theme.warn}>
+                  ⚠ without a schedule nothing uploads automatically — sessions
+                  only sync when you run Sync manually
+                </Text>
+              ) : null}
+            </Box>
             {onContinue ? (
-              <Box>
+              <Box marginTop={1}>
                 {marker(4)}
                 <Text
                   color={focus === 4 ? theme.brand : theme.dim}
