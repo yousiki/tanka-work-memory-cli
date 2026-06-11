@@ -119,7 +119,8 @@ tanka-wm --version | --help
 ### Merging projects (for AI agents)
 
 When a user asks to merge or consolidate work-memory projects (e.g. a renamed
-directory left its history under an old project):
+directory left its history under an old project) — full agent playbook in
+[docs/AGENT-MIGRATE.md](docs/AGENT-MIGRATE.md):
 
 1. **List** — `tanka-wm projects` shows the current mode's projects with
    their project IDs and `cwd:` paths. In all mode that's every discovered

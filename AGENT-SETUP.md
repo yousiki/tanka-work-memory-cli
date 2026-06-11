@@ -190,7 +190,9 @@ Recognised shapes:
 
 A user may ask you to merge or consolidate work-memory projects — typically
 after a directory was renamed/moved and its history ended up split across two
-projects. The workflow:
+projects. **For the full step-by-step agent playbook (confirmation wording,
+constraints, error handling), see [docs/AGENT-MIGRATE.md](docs/AGENT-MIGRATE.md).**
+The short version:
 
 ```bash
 tanka-wm projects                     # 1. list the current mode's projects + project IDs + cwd paths
