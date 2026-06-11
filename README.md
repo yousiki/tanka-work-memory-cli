@@ -105,6 +105,9 @@ compile time.
 ```bash
 tanka-wm                      # launch the TUI board
 tanka-wm sync [project]       # upload new / changed sessions and exit (cron target)
+tanka-wm projects             # list the current mode's projects (all mode: every discovered dir)
+tanka-wm migrate <src> <dst>  # move all of one project's synced data into another project
+tanka-wm migrate --cwd <dir> <dst>  # same, by directory — a dir with no project yet joins <dst>
 tanka-wm cron install [expr]  # install the scheduled-upload job (default: 0 */4 * * *)
 tanka-wm cron status          # show the scheduled-upload job
 tanka-wm cron remove          # remove it
@@ -112,6 +115,28 @@ tanka-wm update               # check for updates and install the latest version
 tanka-wm update --check       # check for updates without installing
 tanka-wm --version | --help
 ```
+
+### Merging projects (for AI agents)
+
+When a user asks to merge or consolidate work-memory projects (e.g. a renamed
+directory left its history under an old project):
+
+1. **List** — `tanka-wm projects` shows the current mode's projects with
+   their project IDs and `cwd:` paths. In all mode that's every discovered
+   directory; `(not created)` marks one whose remote project doesn't exist yet.
+2. **Migrate** — pick the form that matches the source:
+   - `tanka-wm migrate <src> <dst>` — by project id (both args accept a local
+     project id or a remote project ID);
+   - `tanka-wm migrate --cwd <dir> <dst>` — by directory; in all mode prefer
+     this form (copy the `cwd:` line from step 1) — it handles created and
+     not-yet-created directories alike.
+
+Semantics: the server-side move runs first; local sync state (manifest,
+project-map, config) follows on success, so subsequent syncs report to the
+target. With `--cwd`, a directory that has no project yet has nothing to move —
+it joins the target project and binds the directory to it, so the first sync
+uploads there directly. The target must be an existing project; to merge two
+not-yet-created directories, `tanka-wm sync` one of them first.
 
 ### Cron prerequisite (Linux / WSL only)
 
@@ -160,10 +185,7 @@ sudo systemctl enable --now cron   # 'crond' for CentOS/RHEL
 | `r` | refresh |
 | `u` | upload selected session |
 | `s` / `S` | sync project / sync all |
-| `a` | add project (select, projects pane) |
-| `e` | edit project (select, projects pane) |
-| `d` | delete project — created (select, projects pane) |
-| `l` | leave project — joined (select, projects pane) |
+| `m` | select mode: manage projects (create/join/edit/migrate/delete/leave) · all mode: migrate the selected directory's data into another project |
 | `t` | Tanka settings |
 | `w` | re-run wizard |
 | `c` | scheduled upload (cron) |

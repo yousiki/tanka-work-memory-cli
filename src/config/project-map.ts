@@ -70,6 +70,29 @@ export function recordProjectMapping(
 }
 
 /**
+ * Re-point every cwd mapped to `sourceRemoteId` at `targetRemoteId` — the
+ * all-mode half of a server-side project data migration (`/project/change`):
+ * subsequent syncs of those cwds report to the target project instead of
+ * recreating data under the source. Returns the number of cwds re-pointed.
+ */
+export function remapProjectId(
+  env: TankaEnv,
+  sourceRemoteId: string,
+  targetRemoteId: string,
+): number {
+  const map = loadProjectMap(env);
+  let changed = 0;
+  for (const [key, remoteId] of Object.entries(map)) {
+    if (remoteId === sourceRemoteId) {
+      map[key] = targetRemoteId;
+      changed += 1;
+    }
+  }
+  if (changed > 0) saveProjectMap(env, map);
+  return changed;
+}
+
+/**
  * Drop mappings whose remoteProjectId is NOT in `validRemoteIds` — i.e. the
  * remote project was deleted server-side. The next sync then re-runs lazy
  * creation for that cwd (self-heal). Returns the remoteProjectIds that were

@@ -77,6 +77,28 @@ bun run build      # scripts/build-binaries.mjs → dist/tanka-wm-<platform>
   remote project is deleted server-side; select mode pre-validates *created*
   projects against `listProjects` (paginated). Drives both `tanka-wm sync`
   (headless cron) and Board's sync actions.
+- `src/migrate.ts` — `runMigrate`: client side of `POST /project/change` (move
+  one project's data into another). Order is server-call-first; only on success
+  is local state re-pointed at the target — manifest shard (sync progress),
+  all-mode project-map, select-mode config entry (merge cwds if the target
+  already exists locally, else rewrite the source's ids). Runs under the sync
+  lock. `MigrateOptions` lets the TUI inject context config/credentials +
+  `setConfig` so React state doesn't diverge from disk. Two entry points:
+  `runMigrate(srcId, dstId)` (CLI `migrate <src> <dst>`) and
+  `runMigrateForCwd(dir, dstId)` (CLI `migrate --cwd <dir> <dst>`) — the cwd
+  form folds the dir to its owning worktree, then migrates if project-mapped,
+  else JOINS the target + records the project-map binding (nothing to move
+  yet; first sync uploads there). Both TUI entries (ProjectsScreen `m` and
+  all-mode Board `m`) share one `MigrateModal`, parameterized by a
+  `MigrateSource` union (`project` → runMigrate · `cwd` → runMigrateForCwd).
+  Known limit (accepted): the server call and the local re-points are not
+  transactional — a local failure after the server move leaves state split
+  until the user re-runs.
+- `src/project-items.ts` — shared "one row per project" derivation for the
+  Board's PROJECTS panel and `tanka-wm projects` (single source of truth).
+  `sessionCountsForItems` counts select-mode sessions with ONE discovery
+  sweep over all projects' cwds (attribution via worktree-expanded roots),
+  not one full scan per project.
 - `src/config/config.ts` — Config + Credentials persistence.
   `ensureDeviceIdentity` auto-generates `deviceId` (UUID) and `deviceName`
   (macOS: `scutil --get ComputerName`; others: `os.hostname()`).
@@ -134,17 +156,20 @@ Two stages per session:
 - 4 steps (select): mode → tanka → projects → cron
 - 3 steps (all): mode → tanka → cron
 - Tanka step: env + token + deviceName (editable) + deviceId (read-only)
-- Projects step (select only): `ProjectsScreen` — create/join/edit/delete/leave
+- Projects step (select only): `ProjectsScreen` —
+  create/join/edit/migrate/delete/leave
 
-## Board keys (select mode, projects pane focused)
+## Board keys
 
 | Key | Action |
 |-----|--------|
-| `a` | add project (create/join) |
-| `e` | edit project |
-| `d` | delete project (origin=created) |
-| `l` | leave project (origin=joined) |
+| `m` | select mode: manage projects (opens `ProjectsScreen`) · all mode: migrate the selected directory's data into another project (`MigrateModal`) |
+| `s` / `S` | sync the selected project / all projects |
 | `L` | activity log |
+
+ProjectsScreen list keys (select mode): `c` create · `j` join · `e` edit ·
+`m` migrate · `d` delete (origin=created) · `l` leave (origin=joined) ·
+`r` rescan.
 
 ## Unfinished
 

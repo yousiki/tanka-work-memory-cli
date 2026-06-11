@@ -13,6 +13,7 @@ import { ConfigProvider, type ConfigStore } from '../src/hooks/useConfig';
 import { CronModal } from '../src/modals/CronModal';
 import { HelpModal } from '../src/modals/HelpModal';
 import { LogModal } from '../src/modals/LogModal';
+import { MigrateModal } from '../src/modals/MigrateModal';
 import { type Nav, NavProvider } from '../src/navigation';
 import { ModeScreen } from '../src/screens/ModeScreen';
 import { TankaConfigScreen } from '../src/screens/TankaConfigScreen';
@@ -124,6 +125,63 @@ test('HelpModal shows all-sessions mode in the subtitle', async () => {
   );
   await delay(40);
   assert.match(lastFrame() ?? '', /all-sessions mode/);
+  unmount();
+});
+
+test('MigrateModal shows the migrate branch for a synced directory', async () => {
+  const { lastFrame, unmount } = render(
+    harness(
+      <MigrateModal
+        source={{
+          kind: 'cwd',
+          name: 'demo',
+          cwd: '/tmp/demo',
+          remoteProjectId: 'abc123def456',
+        }}
+        onDone={noop}
+        onClose={noop}
+      />,
+    ),
+  );
+  await delay(40);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /Migrate/);
+  assert.match(frame, /source project ID {2}abc123def456/);
+  assert.match(frame, /target project ID/);
+  unmount();
+});
+
+test('MigrateModal shows the join branch for a never-synced directory', async () => {
+  const { lastFrame, unmount } = render(
+    harness(
+      <MigrateModal
+        source={{ kind: 'cwd', name: 'demo', cwd: '/tmp/demo' }}
+        onDone={noop}
+        onClose={noop}
+      />,
+    ),
+  );
+  await delay(40);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /never synced/);
+  assert.match(frame, /target project ID/);
+  unmount();
+});
+
+test('MigrateModal shows the project form for a select-mode project', async () => {
+  const { lastFrame, unmount } = render(
+    harness(
+      <MigrateModal
+        source={{ kind: 'project', name: 'My Proj', remoteProjectId: 'p123' }}
+        onDone={noop}
+        onClose={noop}
+      />,
+    ),
+  );
+  await delay(40);
+  const frame = lastFrame() ?? '';
+  assert.match(frame, /source project ID {2}p123/);
+  assert.match(frame, /target project ID/);
   unmount();
 });
 

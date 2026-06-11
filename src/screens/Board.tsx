@@ -14,12 +14,7 @@ import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Spinner } from '../components/Spinner';
 import { computeWindow, moveIndex } from '../components/windowing';
-import {
-  DEFAULT_TANKA_ENV,
-  projectsForEnv,
-  type TankaEnv,
-} from '../config/config';
-import { lookupRemoteProjectId } from '../config/project-map';
+import { DEFAULT_TANKA_ENV, type TankaEnv } from '../config/config';
 import {
   loadManifest,
   type UploadManifest,
@@ -31,7 +26,6 @@ import {
   discoverSessionsForProject,
   foldWorktreesToOwner,
   type SessionRef,
-  syntheticCwdFor,
 } from '../discovery/sessions';
 import { clip, fmtAge, fmtBytes, fmtRelTime, shortId } from '../format';
 import { useAsync } from '../hooks/useAsync';
@@ -42,7 +36,13 @@ import { log, readLogTail } from '../log';
 import { CronModal } from '../modals/CronModal';
 import { HelpModal } from '../modals/HelpModal';
 import { LogModal } from '../modals/LogModal';
+import { MigrateModal, type MigrateSource } from '../modals/MigrateModal';
 import { useNav } from '../navigation';
+import {
+  allModeItems,
+  type ProjectItem,
+  selectModeItems,
+} from '../project-items';
 import { schedulerStatus } from '../scheduler';
 import { runSync, type SyncResult } from '../sync';
 import { agentColor, theme } from '../theme';
@@ -57,24 +57,13 @@ const AGENT_TAG: Record<string, string> = {
 const LOG_LINES = 3;
 const PROJECT_INFO_HEIGHT = 2 + 1 + 1;
 
-/** Unified display item for both modes — one row in the left PROJECTS panel. */
-interface DisplayItem {
-  name: string;
-  cwdPaths: string[];
-  /** manifest namespace (remoteProjectId once known, synthetic id otherwise) */
-  ns: string;
-  /** backend project id — undefined in all mode until the first sync creates it */
-  remoteProjectId?: string;
-  /** select-mode provenance; absent in all mode */
-  origin?: 'created' | 'joined';
-}
-
 type ModalKind =
   | 'tanka'
   | 'cron'
   | 'log'
   | 'help'
-  | { kind: 'projects'; action: ProjectsInitialAction };
+  | { kind: 'projects'; action: ProjectsInitialAction }
+  | { kind: 'migrate'; source: MigrateSource };
 type Busy = {
   title: string;
   subtitle: string;
@@ -169,41 +158,15 @@ export function Board(): React.ReactElement {
     [isAll, listNonce],
   );
 
-  // Unified display list — one item per "project" in the left panel.
-  // All mode: each cwd = one project row. Select mode: each Project = one row.
-  const displayItems = useMemo<DisplayItem[]>(() => {
-    if (isAll) {
-      const count = new Map<string, number>();
-      for (const r of allDiscovery.data ?? [])
-        count.set(r.cwd, (count.get(r.cwd) ?? 0) + 1);
-      return [...count.keys()]
-        .map((cwd) => {
-          const s = syntheticCwdFor(cwd);
-          // manifest namespace = remoteProjectId once synced; fall back to the
-          // synthetic id for never-synced cwds (no manifest record either way).
-          const remoteProjectId = lookupRemoteProjectId(tankaEnv, cwd);
-          return {
-            name: s.name,
-            cwdPaths: [cwd],
-            ns: remoteProjectId ?? s.id,
-            remoteProjectId,
-          } as DisplayItem;
-        })
-        .sort((a, b) => a.name.localeCompare(b.name));
-    }
-    const cwdById = new Map(config.cwds.map((c) => [c.id, c]));
-    return projectsForEnv(config, tankaEnv)
-      .map((p) => ({
-        name: p.name,
-        cwdPaths: p.cwdIds
-          .map((cid) => cwdById.get(cid)?.cwd)
-          .filter((c): c is string => !!c),
-        ns: p.remoteProjectId,
-        remoteProjectId: p.remoteProjectId,
-        origin: p.origin,
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [isAll, config, tankaEnv, allDiscovery.data]);
+  // Unified display list — one item per "project" in the left panel, derived
+  // by the shared project-items module (same source of truth as the CLI).
+  const displayItems = useMemo<ProjectItem[]>(
+    () =>
+      isAll
+        ? allModeItems(allDiscovery.data ?? [], tankaEnv)
+        : selectModeItems(config, tankaEnv),
+    [isAll, config, tankaEnv, allDiscovery.data],
+  );
 
   const projIdxC = Math.min(projIdx, Math.max(0, displayItems.length - 1));
   const selected = displayItems[projIdxC] ?? null;
@@ -383,8 +346,25 @@ export function Board(): React.ReactElement {
         setFocus((f) => (f === 'projects' ? 'sessions' : 'projects'));
         return;
       }
-      if (input === 'm' && !isAll) {
-        setModal({ kind: 'projects', action: { kind: 'list' } });
+      if (input === 'm') {
+        // select mode: manage projects (migrate lives inside that screen);
+        // all mode: migrate the selected directory's data into another project.
+        if (!isAll) {
+          setModal({ kind: 'projects', action: { kind: 'list' } });
+          return;
+        }
+        const cwd = selected?.cwdPaths[0];
+        if (selected && cwd) {
+          setModal({
+            kind: 'migrate',
+            source: {
+              kind: 'cwd',
+              name: selected.name,
+              cwd,
+              remoteProjectId: selected.remoteProjectId,
+            },
+          });
+        }
         return;
       }
       if (input === 's' && selected) {
@@ -479,6 +459,17 @@ export function Board(): React.ReactElement {
         initialAction={modal.action}
       />
     );
+  if (modal != null && typeof modal === 'object' && modal.kind === 'migrate')
+    return (
+      <MigrateModal
+        source={modal.source}
+        onClose={closeModal}
+        onDone={(t) => {
+          closeModal();
+          showToast(t);
+        }}
+      />
+    );
   if (modal === 'log') return <LogModal onClose={closeModal} />;
   if (modal === 'help') return <HelpModal onClose={closeModal} isAll={isAll} />;
 
@@ -545,11 +536,9 @@ export function Board(): React.ReactElement {
           ) : null}
           <Text color={theme.accent}>s</Text> sync{'  '}
           <Text color={theme.accent}>S</Text> sync all{'  '}
-          {!isAll ? (
-            <>
-              <Text color={theme.accent}>m</Text> manage projs{'  '}
-            </>
-          ) : null}
+          <Text color={theme.accent}>m</Text>{' '}
+          {isAll ? 'migrate' : 'manage projs'}
+          {'  '}
           <Text color={theme.accent}>t</Text> tanka{'  '}
           <Text color={theme.accent}>w</Text> wizard{'  '}
           <Text color={theme.accent}>c</Text> cron{'  '}

@@ -45,6 +45,21 @@ export function leaveProject(client: AxiosInstance, projectId: string) {
   return client.post(`${P}/project/leave`, { projectId }).then((r) => r.data);
 }
 
+/**
+ * Migrate all of one project's data into another project (server-side move).
+ * Callers must re-point the local state afterwards (manifest shard,
+ * project-map, config entry) — `runMigrate` in src/migrate.ts does both halves.
+ */
+export function changeProject(
+  client: AxiosInstance,
+  sourceProjectId: string,
+  targetProjectId: string,
+) {
+  return client
+    .post(`${P}/project/change`, { sourceProjectId, targetProjectId })
+    .then((r) => r.data);
+}
+
 // ─── Batch sync ─────────────────────────────────────────────────────
 
 export function syncProject(

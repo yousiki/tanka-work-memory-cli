@@ -8,13 +8,12 @@
  */
 import { EventEmitter } from 'node:events';
 import { render } from 'ink';
-
 import { App } from './app';
 import {
   DEFAULT_TANKA_ENV,
   loadConfig,
   loadCredentials,
-  projectsForEnv,
+  resolveProjectId,
 } from './config/config';
 import { installSchedule, removeSchedule, schedulerStatus } from './scheduler';
 import { runSync } from './sync';
@@ -59,6 +58,9 @@ if (cmd === '--help' || cmd === '-h') {
       'Usage:',
       '  tanka-wm                     launch the TUI board',
       '  tanka-wm sync [project]      upload new / changed sessions and exit (cron target)',
+      '  tanka-wm projects            list the current mode’s projects (all mode: every discovered dir)',
+      '  tanka-wm migrate <src> <dst> move all of one project’s synced data into another project',
+      '  tanka-wm migrate --cwd <dir> <dst>  same, by directory — a dir with no project yet joins <dst>',
       '  tanka-wm cron install [expr] install the scheduled-upload job (default: 0 */4 * * *)',
       '  tanka-wm cron status         show the scheduled-upload job',
       '  tanka-wm cron remove         remove the scheduled-upload job',
@@ -160,19 +162,108 @@ if (cmd === 'update') {
   }
 }
 
+if (cmd === 'projects') {
+  // Mode-aware, purely local (mirrors the Board's PROJECTS panel — no token
+  // needed): all mode lists every discovered directory, INCLUDING ones whose
+  // remote project hasn't been lazily created yet; select mode lists the
+  // configured projects of the current env.
+  try {
+    const cfg = loadConfig();
+    const env = loadCredentials()?.env ?? DEFAULT_TANKA_ENV;
+    const mode = cfg.mode ?? 'select';
+    const { allModeItems, selectModeItems, sessionCountsForItems } =
+      await import('./project-items');
+
+    if (mode === 'all') {
+      const { discoverAllSessions } = await import('./discovery/sessions');
+      const items = allModeItems(discoverAllSessions(), env);
+      console.log(`mode: all · env: ${env} · ${items.length} project(s)`);
+      console.log(`${'NAME'.padEnd(26)}${'PROJECT ID'.padEnd(16)}SESSIONS`);
+      for (const it of items) {
+        console.log(
+          `${it.name.padEnd(26)}${(it.remoteProjectId ?? '(not created)').padEnd(16)}${it.sessions ?? 0}`,
+        );
+        for (const cwd of it.cwdPaths) console.log(`    cwd: ${cwd}`);
+      }
+    } else {
+      const items = selectModeItems(cfg, env);
+      // One discovery sweep for ALL projects (not one per project).
+      const counts = sessionCountsForItems(items);
+      console.log(`mode: select · env: ${env} · ${items.length} project(s)`);
+      console.log(
+        `${'NAME'.padEnd(26)}${'PROJECT ID'.padEnd(16)}${'ORIGIN'.padEnd(9)}SESSIONS`,
+      );
+      items.forEach((it, i) => {
+        console.log(
+          `${it.name.padEnd(26)}${it.ns.padEnd(16)}${(it.origin ?? '—').padEnd(9)}${counts[i] ?? 0}`,
+        );
+        for (const cwd of it.cwdPaths) console.log(`    cwd: ${cwd}`);
+      });
+    }
+    process.exit(0);
+  } catch (e: unknown) {
+    console.error(
+      `projects failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    process.exit(1);
+  }
+}
+
+if (cmd === 'migrate') {
+  const useCwd = argv[1] === '--cwd';
+  const sourceArg = argv[useCwd ? 2 : 1];
+  const targetArg = argv[useCwd ? 3 : 2];
+  if (!sourceArg || !targetArg) {
+    console.error('usage: tanka-wm migrate <source-project> <target-project>');
+    console.error('       tanka-wm migrate --cwd <directory> <target-project>');
+    console.error(
+      '  project args accept a local project id or a remote project ID;',
+    );
+    console.error(
+      '  --cwd takes a directory — a dir with no project yet joins the target instead',
+    );
+    process.exit(1);
+  }
+  try {
+    const { runMigrate, runMigrateForCwd } = await import('./migrate');
+    const r = useCwd
+      ? await runMigrateForCwd(sourceArg, targetArg)
+      : await runMigrate(sourceArg, targetArg);
+    if (r.action === 'joined') {
+      console.log(
+        `joined project ${r.targetRemoteId} and bound the directory to it`,
+      );
+      console.log('  nothing to migrate yet — the first sync uploads there');
+    } else {
+      console.log(
+        `migrated project data: ${r.sourceRemoteId} → ${r.targetRemoteId}`,
+      );
+      console.log(`  manifest: ${r.manifestMoved} session record(s) moved`);
+      console.log(`  project-map: ${r.cwdsRemapped} cwd(s) re-pointed`);
+      console.log(
+        `  config: project entry ${r.configUpdated ? 'updated' : 'unchanged'}`,
+      );
+    }
+    process.exit(0);
+  } catch (e: unknown) {
+    console.error(
+      `migrate failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    process.exit(1);
+  }
+}
+
 if (cmd === 'sync') {
   try {
     // `sync [proj]` accepts a local project id or a remoteProjectId; resolve to
     // the remoteProjectId that runSync's select-mode limiter expects.
     let remoteProjectId = argv[1];
     if (remoteProjectId) {
-      const cfg = loadConfig();
-      const env = loadCredentials()?.env ?? DEFAULT_TANKA_ENV;
-      const match = projectsForEnv(cfg, env).find(
-        (p) =>
-          p.id === remoteProjectId || p.remoteProjectId === remoteProjectId,
+      remoteProjectId = resolveProjectId(
+        loadConfig(),
+        loadCredentials()?.env ?? DEFAULT_TANKA_ENV,
+        remoteProjectId,
       );
-      if (match) remoteProjectId = match.remoteProjectId;
     }
     const result = await runSync(remoteProjectId ? { remoteProjectId } : {});
     console.log(

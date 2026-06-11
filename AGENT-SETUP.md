@@ -186,6 +186,34 @@ Recognised shapes:
 
 ---
 
+## Merging projects (agent task)
+
+A user may ask you to merge or consolidate work-memory projects — typically
+after a directory was renamed/moved and its history ended up split across two
+projects. The workflow:
+
+```bash
+tanka-wm projects                     # 1. list the current mode's projects + project IDs + cwd paths
+tanka-wm migrate <src> <dst>          # 2a. move ALL of <src>'s data into <dst> (by project id)
+tanka-wm migrate --cwd <dir> <dst>    # 2b. same, by directory — PREFER THIS in all mode
+```
+
+- `tanka-wm projects` is mode-aware and purely local (no token round-trip):
+  all mode lists every discovered directory — including ones marked
+  `(not created)` whose remote project doesn't exist yet; select mode lists
+  the configured projects.
+- `tanka-wm migrate <src> <dst>` accepts a local project id or a remote
+  project ID for either argument. It calls the backend first and only
+  re-points the local sync state (manifest, project-map, config) after the
+  server move succeeds — subsequent syncs report to the target.
+- `--cwd <dir>` takes a directory (copy the `cwd:` line from
+  `tanka-wm projects`) and handles both cases, which is why it's the safer
+  default in all mode: a mapped directory migrates its project's data; a
+  `(not created)` directory has nothing to move yet, so it **joins** the
+  target project and binds the directory to it — the first sync then uploads
+  there directly. The target must be an existing project ID; to merge two
+  not-yet-created directories, `tanka-wm sync` one of them first.
+
 ## Updating
 
 ```bash

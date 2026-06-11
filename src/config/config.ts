@@ -354,6 +354,55 @@ export function ensureProjectsEnv(config: Config, env: TankaEnv): Config {
 }
 
 /**
+ * Resolve a user-supplied project argument to a remoteProjectId: accepts a
+ * local project id or a raw remoteProjectId; unknown values pass through
+ * verbatim (all-mode / foreign projects). Shared by `sync [proj]` and migrate
+ * so the two commands can't drift on resolution semantics.
+ */
+export function resolveProjectId(
+  config: Config,
+  env: TankaEnv,
+  arg: string,
+): string {
+  return (
+    projectsForEnv(config, env).find(
+      (p) => p.id === arg || p.remoteProjectId === arg,
+    )?.remoteProjectId ?? arg
+  );
+}
+
+/**
+ * Re-point a select-mode project at a new remoteProjectId — the config half of
+ * a server-side project data migration (`/project/change`). If a project for
+ * `targetRemoteId` already exists in the same env, the source's cwds are merged
+ * into it and the source entry is dropped (cwd membership is exclusive within
+ * an env); otherwise the source entry itself is rewritten to the target id
+ * (the local id follows, matching the id === remoteProjectId convention).
+ * Returns the updated config, or `null` when no project references the source.
+ */
+export function remapConfigProject(
+  config: Config,
+  env: TankaEnv,
+  sourceRemoteId: string,
+  targetRemoteId: string,
+): Config | null {
+  const inEnv = projectsForEnv(config, env);
+  const source = inEnv.find((p) => p.remoteProjectId === sourceRemoteId);
+  if (!source) return null;
+  const target = inEnv.find((p) => p.remoteProjectId === targetRemoteId);
+  const projects = (config.projects ?? [])
+    .filter((p) => p !== source || target === undefined)
+    .map((p) => {
+      if (target !== undefined && p === target)
+        return { ...p, cwdIds: [...new Set([...p.cwdIds, ...source.cwdIds])] };
+      if (target === undefined && p === source)
+        return { ...p, id: targetRemoteId, remoteProjectId: targetRemoteId };
+      return p;
+    });
+  return { ...config, projects };
+}
+
+/**
  * The project a cwd belongs to within a given env, or undefined. Membership is
  * exclusive *within an env* — the same cwd can belong to a test project and a
  * prod project at once (each env's backend has its own project for it), so the

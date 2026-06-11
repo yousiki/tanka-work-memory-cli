@@ -6,6 +6,7 @@
  *   c — create a new project (calls backend createProject)
  *   j — join an existing project by remoteProjectId
  *   e — edit displayName / add-remove cwds (local only)
+ *   m — migrate the project's data into another project (backend /project/change)
  *   d — delete a self-created project (calls backend del-mine)
  *   l — leave a joined project (calls backend leave)
  */
@@ -44,6 +45,7 @@ import { useAsync } from '../hooks/useAsync';
 import { useConfig } from '../hooks/useConfig';
 import { useScreenInput } from '../hooks/useScreenInput';
 import { useTerminalSize } from '../hooks/useTerminalSize';
+import { MigrateModal } from '../modals/MigrateModal';
 import { theme } from '../theme';
 
 // ─── sub-screen states ──────────────────────────────────────
@@ -82,6 +84,8 @@ type Mode =
       cwdIdx: number;
       error: string | null;
     }
+  // migrate delegates entirely to <MigrateModal> (input, busy, error live there)
+  | { kind: 'migrate'; projectId: string }
   | {
       kind: 'confirm-delete';
       projectId: string;
@@ -643,6 +647,10 @@ export function ProjectsScreen({
       });
       return;
     }
+    if (input === 'm' && selectedProject) {
+      setMode({ kind: 'migrate', projectId: selectedProject.id });
+      return;
+    }
     if (input === 'd' && selectedProject?.origin === 'created') {
       setMode({
         kind: 'confirm-delete',
@@ -665,7 +673,9 @@ export function ProjectsScreen({
       setScanNonce((n) => n + 1);
       return;
     }
-  });
+    // migrate mode: deactivated — <MigrateModal>'s own useScreenInput owns the
+    // keys (one active handler per screen, per the hook's convention).
+  }, mode.kind !== 'migrate');
 
   // ── render ──
   const subtitle = wizardLabel
@@ -704,6 +714,28 @@ export function ProjectsScreen({
         </Box>
       </ScreenFrame>
     );
+  }
+
+  if (mode.kind === 'migrate') {
+    const p = projects.find((x) => x.id === mode.projectId);
+    // p can only vanish through the modal's own migration (merge into an
+    // existing target), and that transition also leaves migrate mode — so the
+    // fall-through below is unreachable in practice, just a safe default.
+    if (p)
+      return (
+        <MigrateModal
+          source={{
+            kind: 'project',
+            name: p.name,
+            remoteProjectId: p.remoteProjectId,
+          }}
+          onClose={() => setMode({ kind: 'list' })}
+          onDone={() => {
+            setMode({ kind: 'list' });
+            setScanNonce((n) => n + 1);
+          }}
+        />
+      );
   }
 
   if (mode.kind === 'create' || mode.kind === 'join' || mode.kind === 'edit') {
@@ -843,7 +875,12 @@ export function ProjectsScreen({
             ['↑↓', 'move'],
             ['c', 'create'],
             ['j', 'join'],
-            ...(selectedProject ? [['e', 'edit'] as [string, string]] : []),
+            ...(selectedProject
+              ? [
+                  ['e', 'edit'] as [string, string],
+                  ['m', 'migrate'] as [string, string],
+                ]
+              : []),
             ...(selectedProject?.origin === 'created'
               ? [['d', 'delete'] as [string, string]]
               : []),

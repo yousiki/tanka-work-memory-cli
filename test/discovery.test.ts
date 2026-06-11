@@ -34,8 +34,8 @@ test('claudeEncodedDir collapses every non-alphanumeric char (Windows + CJK)', (
   );
   // POSIX: separators and dots fold too — matches Claude Code's ~/.claude/projects naming.
   assert.equal(
-    claudeEncodedDir('/Users/brian/.config/app'),
-    '-Users-brian--config-app',
+    claudeEncodedDir('/Users/me/.config/app'),
+    '-Users-me--config-app',
   );
 });
 

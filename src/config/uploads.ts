@@ -188,6 +188,41 @@ export function dropProjectManifest(env: TankaEnv, projectId: string): number {
 }
 
 /**
+ * Move every record from one project namespace into another — the local half
+ * of a server-side project data migration (`/project/change`). Records keep
+ * their upload state so the next sync doesn't re-upload sessions that already
+ * live under the target on the server. On a sessionId collision the record
+ * with the newer transcript snapshot wins (fewer spurious 'changed'
+ * re-uploads). Returns the number of source records actually written into the
+ * target — collision losers are dropped, not counted.
+ */
+export function migrateProjectManifest(
+  env: TankaEnv,
+  sourceProjectId: string,
+  targetProjectId: string,
+): number {
+  const manifest = loadManifest(env);
+  const targetShard: Record<string, UploadRecord> = {};
+  const moved: UploadRecord[] = [];
+  for (const rec of Object.values(manifest.entries)) {
+    if (rec.projectId === targetProjectId) targetShard[rec.sessionId] = rec;
+    else if (rec.projectId === sourceProjectId) moved.push(rec);
+  }
+  if (moved.length === 0) return 0;
+  let written = 0;
+  for (const rec of moved) {
+    const existing = targetShard[rec.sessionId];
+    if (!existing || existing.transcriptMtimeMs < rec.transcriptMtimeMs) {
+      targetShard[rec.sessionId] = { ...rec, projectId: targetProjectId };
+      written += 1;
+    }
+  }
+  writeProjectShard(env, targetProjectId, targetShard);
+  writeProjectShard(env, sourceProjectId, {}); // empty shard removes the file
+  return written;
+}
+
+/**
  * Reconcile the ENTIRE manifest against a complete snapshot of what exists
  * locally, keyed by project namespace (`live`). Any record not present in
  * `live` is dropped — including records of a namespace that has vanished
