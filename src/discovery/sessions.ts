@@ -11,6 +11,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import type { ProjectCwd } from '../config/config';
+import {
+  discoverOpenCodeSessions,
+  exportOpenCodeTranscript,
+  scanOpenCodeCwds,
+} from './opencode';
 
 /**
  * Discover the raw coding-agent session files that touched a given project, so a caller can
@@ -30,6 +35,10 @@ import type { ProjectCwd } from '../config/config';
  * Codex stores rollouts under ~/.codex/sessions/<date>/<rollout>.jsonl — no per-cwd dir to key on,
  * so we probe every rollout's head for session_meta.payload.{cwd,id} and keep the exact-cwd matches.
  *
+ * OpenCode stores sessions/messages/parts in SQLite under ~/.local/share/opencode/ (including
+ * per-project storage DB files). We discover matching session rows and generate export-shaped JSON on
+ * demand for upload/viewing instead of uploading a whole DB.
+ *
  * Claude Cowork (Claude Code running in a Claude Desktop sandbox) stores sessions under Claude
  * Desktop's appData dir (macOS ~/Library/Application Support, Windows %APPDATA%, Linux ~/.config)
  * in Claude/local-agent-mode-sessions/ as .../local_<uuid>/ dirs, each beside a local_<uuid>.json
@@ -40,7 +49,7 @@ import type { ProjectCwd } from '../config/config';
  * Dedup is per (agent, id) — a session that shows up under multiple match-paths only counts once.
  */
 
-export type SessionAgent = 'claude-code' | 'codex' | 'cowork';
+export type SessionAgent = 'claude-code' | 'codex' | 'cowork' | 'opencode';
 
 export interface SidecarFile {
   /** path relative to the sidecar dir, POSIX "/"-separated (e.g. "subagents/agent-a1.jsonl") */
@@ -51,11 +60,17 @@ export interface SidecarFile {
   mtimeMs: number;
 }
 
+export interface OpenCodeTranscriptSource {
+  kind: 'opencode';
+  dbPath: string;
+  sessionId: string;
+}
+
 export interface SessionRef {
   /** session/rollout id — the dedup key */
   id: string;
   agent: SessionAgent;
-  /** absolute path to the session .jsonl */
+  /** absolute path to the session .jsonl, audit file, or backing DB */
   path: string;
   /** cwd the session ran in (best-effort) */
   cwd: string;
@@ -67,6 +82,8 @@ export interface SessionRef {
    * omitted.
    */
   meta: Record<string, string>;
+  /** Non-file-backed primary transcript source. Omitted for JSONL/audit-file providers. */
+  transcript?: OpenCodeTranscriptSource;
   /**
    * Files in the sibling <id>/ sidecar dir Claude Code writes next to the transcript — subagent
    * transcripts (subagents/agent-*.jsonl) and spilled large tool outputs (tool-results/*).
@@ -606,6 +623,9 @@ export function discoverSessionsForProject(
     }
   }
 
+  // ── OpenCode ─────────────────────────────────────────────
+  for (const ref of discoverOpenCodeSessions(roots, cwdEqualsAny)) add(ref);
+
   // ── Claude Cowork ────────────────────────────────────────
   const cwRoot = coworkSessionsRoot();
   // ~/Claude — Cowork's default workspace root (the dir the desktop app drops sessions into when
@@ -668,6 +688,30 @@ export function countSessionsForProject(cwds: readonly string[]): number {
     return discoverSessionsForProject(cwds).length;
   } catch {
     return 0;
+  }
+}
+
+export function primaryTranscriptRelPath(ref: SessionRef): string {
+  return ref.transcript?.kind === 'opencode'
+    ? 'transcript.json'
+    : 'transcript.jsonl';
+}
+
+export function readPrimaryTranscriptBuffer(ref: SessionRef): Buffer {
+  if (ref.transcript?.kind === 'opencode') {
+    return Buffer.from(
+      exportOpenCodeTranscript(ref.transcript.dbPath, ref.transcript.sessionId),
+      'utf8',
+    );
+  }
+  return readFileSync(ref.path);
+}
+
+export function readPrimaryTranscriptText(ref: SessionRef): string {
+  try {
+    return readPrimaryTranscriptBuffer(ref).toString('utf8');
+  } catch {
+    return '';
   }
 }
 
@@ -758,6 +802,8 @@ export function scanSessionCwds(): ScannedCwd[] {
     for (const [cwd, sessionCount] of counts)
       out.push({ cwd, agent: 'codex', sessionCount });
   }
+
+  for (const scanned of scanOpenCodeCwds()) out.push(scanned);
 
   // Cowork — anchor on the metadata's userSelectedFolders. Deliberately NO ~/Claude catch-all here
   // (unlike discoverSessionsForProject): this is reverse inference (session → cwd) with no

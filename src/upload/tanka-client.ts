@@ -8,7 +8,7 @@
  *      (both must match what was declared in step 1, since they're baked into
  *      the pre-signed URL's signature).
  *
- * One session uploads as several files (transcript.jsonl + sidecar files)
+ * One session uploads as several files (primary transcript + sidecar files)
  * sharing a single `groupId`. The upload is considered complete when the
  * caller's subsequent POST /sync succeeds (not when the last PUT finishes).
  *
@@ -27,7 +27,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
 import { TANKA_ENVS, type TankaEnv } from '../config/config';
-import type { SessionRef, SidecarFile } from '../discovery/sessions';
+import {
+  primaryTranscriptRelPath,
+  readPrimaryTranscriptBuffer,
+  type SessionRef,
+  type SidecarFile,
+} from '../discovery/sessions';
 
 /**
  * API base URL resolution via environment variables.
@@ -84,7 +89,7 @@ export interface UploadProgress {
 
 /** One uploaded file's backend identity, keyed back to its session-relative path. */
 export interface UploadedFile {
-  /** 'transcript.jsonl' | 'subagents/agent-a1.jsonl' | 'tool-results/x' | … */
+  /** 'transcript.jsonl' | 'transcript.json' | 'subagents/agent-a1.jsonl' | … */
   relPath: string;
   fileId: string;
   /** object storage URI */
@@ -178,7 +183,13 @@ function collectItems(
   sidecars?: readonly SidecarFile[],
 ): FileItem[] {
   const items: FileItem[] = [];
-  items.push(buildItem(ref.id, 'transcript.jsonl', readFileSync(ref.path)));
+  items.push(
+    buildItem(
+      ref.id,
+      primaryTranscriptRelPath(ref),
+      readPrimaryTranscriptBuffer(ref),
+    ),
+  );
   for (const f of sidecars ?? ref.sidecarFiles) {
     if (f.sizeBytes <= 0) continue;
     items.push(buildItem(ref.id, f.relPath, readFileSync(f.absPath)));
@@ -336,8 +347,9 @@ export async function uploadSession(
   }
   onProgress({ label: 'done', done, total });
 
+  const transcriptRelPath = primaryTranscriptRelPath(ref);
   const transcript =
-    files.find((f) => f.relPath === 'transcript.jsonl') ?? files[0]!;
+    files.find((f) => f.relPath === transcriptRelPath) ?? files[0]!;
 
   return {
     fileCount: total,

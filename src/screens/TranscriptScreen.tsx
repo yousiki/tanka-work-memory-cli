@@ -7,7 +7,10 @@ import { HintBar, ScreenFrame } from '../components/ScreenFrame';
 import { SelectList } from '../components/SelectList';
 import { Spinner } from '../components/Spinner';
 import { computeWindow, moveIndex } from '../components/windowing';
-import { readSessionFile } from '../discovery/sessions';
+import {
+  readPrimaryTranscriptText,
+  readSessionFile,
+} from '../discovery/sessions';
 import {
   badgeLabel,
   categorize,
@@ -43,7 +46,7 @@ async function loadTranscript(route: TranscriptRoute): Promise<Loaded> {
   if (route.kind === 'transcript') {
     const loc = route.locator;
     return {
-      text: readSessionFile(loc.ref.path),
+      text: readPrimaryTranscriptText(loc.ref),
       agent: loc.ref.agent,
       subagents: loc.ref.sidecarFiles
         .map((f) => f.relPath)

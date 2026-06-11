@@ -44,6 +44,7 @@ import {
 import {
   discoverAllSessions,
   discoverSessionsForProject,
+  primaryTranscriptRelPath,
   type SessionRef,
   syntheticCwdFor,
 } from './discovery/sessions';
@@ -116,10 +117,12 @@ async function ensureRemoteProject(
   return remoteId;
 }
 
-/** The backend recognises two agent types; cowork is a Claude Desktop variant. */
-type SyncAgent = 'claude-code' | 'codex';
-function syncAgent(agent: string): SyncAgent {
-  return agent === 'codex' ? 'codex' : 'claude-code';
+/** Backend sync agent types; cowork is a Claude Desktop variant of Claude Code. */
+type SyncAgent = 'claude-code' | 'codex' | 'opencode';
+export function syncAgent(agent: string): SyncAgent {
+  if (agent === 'codex') return 'codex';
+  if (agent === 'opencode') return 'opencode';
+  return 'claude-code';
 }
 
 /** Classify a sidecar file by its session-relative path. */
@@ -142,9 +145,10 @@ function buildSyncItems(
 ): SyncSessionItem[] {
   const sidecarByRel = new Map(ref.sidecarFiles.map((f) => [f.relPath, f]));
   const baseMeta = { ...ref.meta, detailType: ref.agent, deviceId, deviceName };
+  const transcriptRelPath = primaryTranscriptRelPath(ref);
 
   return outcome.files.map((f): SyncSessionItem => {
-    if (f.relPath === 'transcript.jsonl') {
+    if (f.relPath === transcriptRelPath) {
       return {
         id: ref.id,
         agent: syncAgent(ref.agent),

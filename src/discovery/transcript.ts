@@ -8,7 +8,12 @@
  * plain data so this CLI's TUI (or any other renderer) can present it however it likes.
  */
 
-export type TranscriptAgent = 'claude-code' | 'codex' | 'cowork' | 'unknown';
+export type TranscriptAgent =
+  | 'claude-code'
+  | 'codex'
+  | 'cowork'
+  | 'opencode'
+  | 'unknown';
 
 export type EntryCategory =
   | 'user'
@@ -75,10 +80,46 @@ function prettyJson(v: unknown): string {
   }
 }
 
-/** Parse JSONL text → entries. Blank lines dropped; bad lines kept as `{ _unparsed }`. */
-export function parseTranscript(text: string): TranscriptEntry[] {
+function openCodeEntries(parsed: any): TranscriptEntry[] | null {
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.messages))
+    return null;
   const out: TranscriptEntry[] = [];
-  const lines = String(text ?? '').split('\n');
+  out.push({
+    lineNo: 1,
+    entry: { type: 'opencode_session', info: parsed.info ?? {} },
+  });
+  let lineNo = 2;
+  for (const message of parsed.messages) {
+    if (!message || typeof message !== 'object') continue;
+    out.push({
+      lineNo,
+      entry: {
+        type: 'opencode_message',
+        info: message.info ?? {},
+        parts: Array.isArray(message.parts) ? message.parts : [],
+      },
+    });
+    lineNo += 1;
+  }
+  return out;
+}
+
+/** Parse JSON/JSONL text → entries. Blank lines dropped; bad lines kept as `{ _unparsed }`. */
+export function parseTranscript(text: string): TranscriptEntry[] {
+  const source = String(text ?? '');
+  const trimmed = source.trim();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const opencode = openCodeEntries(parsed);
+      if (opencode) return opencode;
+      return [{ lineNo: 1, entry: parsed }];
+    } catch {
+      // Fall back to JSONL line parsing; a JSONL transcript also starts with "{".
+    }
+  }
+  const out: TranscriptEntry[] = [];
+  const lines = source.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const ln = lines[i] ?? '';
     if (ln.trim() === '') continue;
@@ -130,6 +171,31 @@ function firstToolUse(content: any): any {
   return null;
 }
 
+function openCodeRole(entry: any): string {
+  return String(
+    entry.info?.role ?? entry.info?.type ?? entry.role ?? 'assistant',
+  );
+}
+
+function openCodeParts(entry: any): any[] {
+  return Array.isArray(entry.parts) ? entry.parts : [];
+}
+
+function openCodePartKind(part: any): string {
+  return String(part?.type ?? part?.kind ?? part?.state?.status ?? 'part');
+}
+
+function openCodePartText(part: any): string {
+  if (!part || typeof part !== 'object') return '';
+  for (const key of ['text', 'content', 'output', 'title', 'summary']) {
+    const value = part[key];
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  if (part.input !== undefined) return prettyJson(part.input);
+  if (part.data !== undefined) return prettyJson(part.data);
+  return '';
+}
+
 /** Map an entry to one of the badge categories. Best-effort; unknown shapes → "other". */
 export function categorize(entry: any, agent: string): EntryCategory {
   if (!entry || typeof entry !== 'object') return 'other';
@@ -168,6 +234,19 @@ export function categorize(entry: any, agent: string): EntryCategory {
     const at = entry.attachment?.type;
     if (CC_HOOK_TYPES.has(type) || (at && CC_HOOK_TYPES.has(at))) return 'hook';
     return 'other';
+  }
+
+  if (agent === 'opencode') {
+    if (type === 'opencode_session') return 'meta';
+    if (type === 'opencode_message') {
+      const role = openCodeRole(entry);
+      if (role === 'user') return 'user';
+      if (
+        openCodeParts(entry).some((p) => openCodePartKind(p).includes('tool'))
+      )
+        return 'tool';
+      return 'assistant';
+    }
   }
 
   if (agent === 'codex') {
@@ -214,6 +293,11 @@ export function categorize(entry: any, agent: string): EntryCategory {
 export function badgeLabel(entry: any, agent: string): string {
   if (!entry || typeof entry !== 'object') return '(json)';
   if (entry._unparsed !== undefined) return '(unparsed)';
+  if (agent === 'opencode') {
+    if (entry.type === 'opencode_session') return 'session';
+    if (entry.type === 'opencode_message')
+      return `message · ${openCodeRole(entry)}`;
+  }
   if (agent === 'codex' && entry.type === 'response_item') {
     const p = entry.payload || {};
     const k = p.type || p.role;
@@ -290,6 +374,21 @@ export function previewLine(entry: any, agent: string): string {
     }
   }
 
+  if (agent === 'opencode') {
+    if (type === 'opencode_session') {
+      const info = entry.info || {};
+      return truncate(String(info.title ?? info.id ?? 'OpenCode session'), 90);
+    }
+    if (type === 'opencode_message') {
+      const parts = openCodeParts(entry);
+      const tool = parts.find((p) => openCodePartKind(p).includes('tool'));
+      const text = parts.map(openCodePartText).filter(Boolean).join(' ');
+      if (tool)
+        return `→ [${tool.name || tool.tool || 'tool'}]${text ? ` ${truncate(text, 60)}` : ' …'}`;
+      return truncate(text || openCodeRole(entry), 88);
+    }
+  }
+
   if (agent === 'codex') {
     if (type === 'session_meta') return 'session meta';
     if (type === 'turn_context') return 'turn context';
@@ -346,6 +445,7 @@ function isMessageEntry(entry: any, agent: string): boolean {
       typeof entry.message === 'object'
     );
   }
+  if (agent === 'opencode') return entry.type === 'opencode_message';
   if (agent === 'codex') {
     return (
       entry.type === 'response_item' &&
@@ -358,6 +458,42 @@ function isMessageEntry(entry: any, agent: string): boolean {
 }
 
 /** Turn a message's `content` into renderable detail blocks. */
+function openCodeBlocks(parts: any[]): DetailBlock[] {
+  const out: DetailBlock[] = [];
+  for (const part of parts) {
+    if (!part || typeof part !== 'object') continue;
+    const kind = openCodePartKind(part);
+    const text = openCodePartText(part);
+    if (kind === 'text' || kind === 'file' || kind === 'step-start') {
+      if (text.trim()) out.push({ kind: 'text', text });
+    } else if (kind === 'reasoning') {
+      out.push({ kind: 'thinking', text: text || prettyJson(part) });
+    } else if (kind.includes('tool')) {
+      out.push({
+        kind: 'tool_use',
+        name: String(part.name || part.tool || part.toolName || 'tool'),
+        input: part.input !== undefined ? prettyJson(part.input) : text,
+      });
+      const output = part.output ?? part.result ?? part.error;
+      if (output !== undefined) {
+        const raw = typeof output === 'string' ? output : prettyJson(output);
+        const truncated = raw.length > SESSION_DETAIL_TEXT_MAX;
+        out.push({
+          kind: 'tool_result',
+          isError: part.error !== undefined,
+          text: truncated ? raw.slice(0, SESSION_DETAIL_TEXT_MAX) : raw,
+          truncated,
+        });
+      }
+    } else if (text.trim()) {
+      out.push({ kind: 'text', text });
+    } else {
+      out.push({ kind: 'json', text: prettyJson(part) });
+    }
+  }
+  return out;
+}
+
 function messageBlocks(content: any): DetailBlock[] {
   if (content == null) return [];
   if (typeof content === 'string') {
@@ -465,6 +601,11 @@ export function entryDetail(
       role = String(m.role || entry.type);
       model = typeof m.model === 'string' ? m.model : undefined;
       content = m.content;
+    } else if (agent === 'opencode') {
+      const info = entry.info || {};
+      role = openCodeRole(entry);
+      model = typeof info.model === 'string' ? info.model : undefined;
+      content = openCodeParts(entry);
     } else {
       const p = entry.payload || {};
       role = String(p.role || 'assistant');
@@ -476,9 +617,14 @@ export function entryDetail(
       role,
       model,
       timestamp:
-        typeof entry.timestamp === 'string' ? entry.timestamp : undefined,
+        typeof entry.timestamp === 'string'
+          ? entry.timestamp
+          : typeof entry.info?.time_created === 'number'
+            ? new Date(entry.info.time_created).toISOString()
+            : undefined,
       category: categorize(entry, agent),
-      blocks: messageBlocks(content),
+      blocks:
+        agent === 'opencode' ? openCodeBlocks(content) : messageBlocks(content),
       rawJson: prettyJson(entry),
     };
   }
@@ -494,6 +640,25 @@ export function entryDetail(
     rows.push([k, String(v)]);
   };
   for (const k of NOTABLE_FIELDS) pushRow(k, entry[k]);
+  if (
+    entry.info &&
+    typeof entry.info === 'object' &&
+    !Array.isArray(entry.info)
+  ) {
+    for (const k of [
+      'id',
+      'role',
+      'title',
+      'model',
+      'provider',
+      'directory',
+      'path',
+      'time_created',
+      'time_updated',
+    ]) {
+      pushRow(`info.${k}`, entry.info[k]);
+    }
+  }
   if (
     entry.payload &&
     typeof entry.payload === 'object' &&

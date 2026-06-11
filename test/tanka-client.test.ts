@@ -1,6 +1,7 @@
+import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, test } from 'bun:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -133,6 +134,112 @@ test('uploadSession applies once then PUTs each file, returns transcriptFileId',
       p.headers['Content-Disposition']?.startsWith('attachment;filename='),
     ),
   );
+});
+
+test('uploadSession uploads OpenCode generated JSON transcript', async () => {
+  const cwd = join(home, 'project');
+  mkdirSync(cwd, { recursive: true });
+  const dbPath = join(home, 'opencode.db');
+  const db = new Database(dbPath);
+  try {
+    db.exec(`
+      CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, title TEXT, time_created INTEGER, data TEXT);
+      CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, data TEXT);
+      CREATE TABLE part (id TEXT PRIMARY KEY, session_id TEXT, message_id TEXT, data TEXT);
+    `);
+    db.query(
+      'INSERT INTO session (id, directory, title, time_created, data) VALUES (?, ?, ?, ?, ?)',
+    ).run(
+      'oc-1',
+      cwd,
+      'OpenCode upload',
+      1_700_000_000_000,
+      JSON.stringify({ model: 'test-model' }),
+    );
+    db.query('INSERT INTO message (id, session_id, data) VALUES (?, ?, ?)').run(
+      'm1',
+      'oc-1',
+      JSON.stringify({ role: 'user' }),
+    );
+    db.query(
+      'INSERT INTO part (id, session_id, message_id, data) VALUES (?, ?, ?, ?)',
+    ).run(
+      'p1',
+      'oc-1',
+      'm1',
+      JSON.stringify({ type: 'text', text: 'upload me' }),
+    );
+  } finally {
+    db.close();
+  }
+
+  const calls: Call[] = [];
+  const putBodies: string[] = [];
+  globalThis.fetch = (async (
+    url: unknown,
+    init: { method?: string; body?: unknown; headers?: Record<string, string> },
+  ) => {
+    calls.push({
+      url: String(url),
+      method: init?.method ?? 'GET',
+      body: typeof init?.body === 'string' ? init.body : undefined,
+      headers: init?.headers ?? {},
+    });
+    if (String(url).includes('/open/file/upload/application')) {
+      const reqBody = JSON.parse(String(init.body)) as {
+        files: Array<{
+          localId: string;
+          fileName: string;
+          contentType: string;
+        }>;
+      };
+      assert.equal(reqBody.files[0]!.localId, 'transcript.json');
+      assert.equal(reqBody.files[0]!.contentType, 'application/json');
+      return new Response(
+        JSON.stringify({
+          code: 0,
+          data: {
+            files: reqBody.files.map((f, i) => ({
+              fileId: `id${i}`,
+              localId: f.localId,
+              url: `https://files/${f.fileName}`,
+              uploadUrl: `https://s3.put/${f.localId}`,
+            })),
+          },
+        }),
+        { status: 200 },
+      );
+    }
+    if (init?.body instanceof Buffer)
+      putBodies.push(init.body.toString('utf8'));
+    return new Response('', { status: 200 });
+  }) as unknown as typeof fetch;
+
+  const ref: SessionRef = {
+    id: 'oc-1',
+    agent: 'opencode',
+    path: dbPath,
+    cwd,
+    sizeBytes: 123,
+    mtimeMs: 1_700_000_000_000,
+    meta: {},
+    sidecarFiles: [],
+    transcript: { kind: 'opencode', dbPath, sessionId: 'oc-1' },
+  };
+  const out = await uploadSession('tok', 'prod', ref, () => {}, 'R00000000001');
+
+  assert.equal(out.fileCount, 1);
+  assert.equal(out.files[0]!.relPath, 'transcript.json');
+  assert.equal(out.transcriptFileId, 'id0');
+  assert.equal(putBodies.length, 1);
+  const uploaded = JSON.parse(putBodies[0]!) as {
+    info: { id: string; title: string };
+    messages: Array<{ parts: Array<{ text?: string }> }>;
+  };
+  assert.equal(uploaded.info.id, 'oc-1');
+  assert.equal(uploaded.info.title, 'OpenCode upload');
+  assert.equal(uploaded.messages[0]!.parts[0]!.text, 'upload me');
+  assert.ok(calls.some((c) => c.url === 'https://s3.put/transcript.json'));
 });
 
 test('uploadSession uploads sidecar files and returns them keyed by relPath', async () => {

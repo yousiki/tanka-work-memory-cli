@@ -53,6 +53,7 @@ const AGENT_TAG: Record<string, string> = {
   'claude-code': 'CC',
   codex: 'CDX',
   cowork: 'CW',
+  opencode: 'OC',
 };
 const LOG_LINES = 3;
 const PROJECT_INFO_HEIGHT = 2 + 1 + 1;

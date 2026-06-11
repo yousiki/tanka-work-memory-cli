@@ -55,10 +55,11 @@ bun run build      # scripts/build-binaries.mjs → dist/tanka-wm-<platform>
 
 ### Key modules
 
-- `src/discovery/sessions.ts` + `transcript.ts` — session discovery (Claude
-  Code / Codex / Cowork, cross-platform). `syntheticCwdFor(cwd)` creates
-  virtual ProjectCwd entries for all mode. Both git calls pass
-  `windowsHide: true`.
+- `src/discovery/sessions.ts` + `transcript.ts` + `opencode.ts` — session
+  discovery (Claude Code / Codex / Cowork / OpenCode, cross-platform).
+  OpenCode reads SQLite-backed local storage and generates export-shaped JSON on
+  demand for upload/viewing. `syntheticCwdFor(cwd)` creates virtual ProjectCwd
+  entries for all mode. Both git calls pass `windowsHide: true`.
 - `src/api/` — axios client for the work-memory business endpoints. Uses the
   **same** base URL as file upload (via `resolveBaseUrl()`, no separate gateway)
   and only a `token` header (no signing). `client.ts` creates an instance with
