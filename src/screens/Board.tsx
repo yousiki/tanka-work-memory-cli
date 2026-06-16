@@ -25,6 +25,7 @@ import {
   discoverAllSessions,
   discoverSessionsForProject,
   foldWorktreesToOwner,
+  type SessionAgent,
   type SessionRef,
 } from '../discovery/sessions';
 import { clip, fmtAge, fmtBytes, fmtRelTime, shortId } from '../format';
@@ -49,11 +50,12 @@ import { agentColor, theme } from '../theme';
 import { type ProjectsInitialAction, ProjectsScreen } from './ProjectsScreen';
 import { TankaConfigScreen } from './TankaConfigScreen';
 
-const AGENT_TAG: Record<string, string> = {
+const AGENT_TAG: Record<SessionAgent, string> = {
   'claude-code': 'CC',
   codex: 'CDX',
   cowork: 'CW',
   opencode: 'OC',
+  jcode: 'JC',
 };
 const LOG_LINES = 3;
 const PROJECT_INFO_HEIGHT = 2 + 1 + 1;

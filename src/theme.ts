@@ -29,5 +29,6 @@ export function agentColor(agent: string): string {
   if (agent === 'codex') return 'green';
   if (agent === 'cowork') return 'blue';
   if (agent === 'opencode') return 'yellow';
+  if (agent === 'jcode') return 'cyan';
   return 'gray';
 }

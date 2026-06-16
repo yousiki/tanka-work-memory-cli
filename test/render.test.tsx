@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, test } from 'bun:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -65,6 +65,57 @@ test('App boots to the Board once the wizard is done', async () => {
   assert.match(frame, /PROJECTS/);
   assert.match(frame, /SESSIONS/);
   unmount();
+});
+
+test('Board shows J Code sessions with a JC agent badge', async () => {
+  const oldHome = process.env.HOME;
+  const userHome = mkdtempSync(join(tmpdir(), 'wm-tui-jcode-home-'));
+  try {
+    process.env.HOME = userHome;
+    const cwd = join(userHome, 'work', 'proj');
+    const sessionsDir = join(userHome, '.jcode', 'sessions');
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(sessionsDir, { recursive: true });
+    writeFileSync(
+      join(sessionsDir, 'session_badge_123.json'),
+      JSON.stringify({
+        id: 'session_badge_123',
+        created_at: '2026-06-16T00:00:00.000Z',
+        updated_at: '2026-06-16T00:01:00.000Z',
+        provider_key: 'cliproxyapi',
+        model: 'gpt-5.5-fast',
+        working_dir: cwd,
+        messages: [],
+      }),
+    );
+    saveConfig({
+      ...emptyConfig(),
+      mode: 'select',
+      wizardStep: 'done',
+      cwds: [{ id: 'proj-cwd', name: 'proj', cwd }],
+      projects: [
+        {
+          id: 'proj',
+          remoteProjectId: 'remote123456',
+          name: 'proj',
+          cwdIds: ['proj-cwd'],
+          origin: 'created',
+          env: 'prod',
+        },
+      ],
+    });
+
+    const { lastFrame, unmount } = render(<App checkMode={false} />);
+    await delay(120);
+    const frame = lastFrame() ?? '';
+    assert.match(frame, /JC/);
+    assert.doesNotMatch(frame, /\?\s+\d+(?:\.\d+)?\s*[KMGT]?B/);
+    unmount();
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+    rmSync(userHome, { recursive: true, force: true });
+  }
 });
 
 test('App resumes the wizard at the recorded step', async () => {
