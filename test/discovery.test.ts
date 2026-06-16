@@ -1,6 +1,6 @@
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -14,8 +14,11 @@ import {
   discoverSessionsForProject,
   expandToWorktreeUnion,
   foldWorktreesToOwner,
+  jcodeSessionsRoot,
   owningWorktree,
+  primaryTranscriptRelPath,
   type SessionRef,
+  scanSessionCwds,
   syntheticCwdFor,
 } from '../src/discovery/sessions';
 
@@ -197,6 +200,78 @@ test('discoverSessionsForProject over an empty dir yields no sessions', () => {
     assert.equal(countSessionsForProject([dir]), 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('discovers Jcode JSON sessions and sibling journal sidecar', () => {
+  const home = mkdtempSync(join(tmpdir(), 'wm-jcode-home-'));
+  const oldHome = process.env.HOME;
+  const cwd = join(home, 'work', 'proj');
+  const other = join(home, 'work', 'other');
+  try {
+    process.env.HOME = home;
+    mkdirSync(jcodeSessionsRoot(home), { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(other, { recursive: true });
+    const sessionPath = join(jcodeSessionsRoot(home), 'session_test_123.json');
+    writeFileSync(
+      sessionPath,
+      JSON.stringify({
+        id: 'session_test_123',
+        created_at: '2026-06-16T00:00:00.000Z',
+        updated_at: '2026-06-16T00:01:00.000Z',
+        provider_key: 'cliproxyapi',
+        model: 'gpt-5.5-fast',
+        working_dir: cwd,
+        short_name: 'test',
+        status: 'Active',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+        env_snapshots: [{ jcode_version: 'v0.29.0' }],
+      }),
+    );
+    writeFileSync(
+      join(jcodeSessionsRoot(home), 'session_test_123.journal.jsonl'),
+      '{"append_messages":[]}',
+    );
+    writeFileSync(
+      join(jcodeSessionsRoot(home), 'session_other_456.json'),
+      JSON.stringify({
+        id: 'session_other_456',
+        working_dir: other,
+        messages: [],
+      }),
+    );
+
+    const refs = discoverSessionsForProject([cwd]).filter(
+      (ref) => ref.agent === 'jcode',
+    );
+    assert.equal(refs.length, 1);
+    const ref = refs[0]!;
+    assert.equal(ref.id, 'session_test_123');
+    assert.equal(ref.cwd, resolve(cwd));
+    assert.equal(ref.path, sessionPath);
+    assert.equal(ref.meta.model, 'gpt-5.5-fast');
+    assert.equal(ref.meta.provider, 'cliproxyapi');
+    assert.equal(ref.meta.version, 'v0.29.0');
+    assert.equal(primaryTranscriptRelPath(ref), 'transcript.json');
+    assert.deepEqual(
+      ref.sidecarFiles.map((f) => f.relPath),
+      ['journal.jsonl'],
+    );
+
+    assert.deepEqual(
+      scanSessionCwds()
+        .filter((c) => c.agent === 'jcode')
+        .sort((a, b) => a.cwd.localeCompare(b.cwd)),
+      [
+        { cwd: resolve(other), agent: 'jcode', sessionCount: 1 },
+        { cwd: resolve(cwd), agent: 'jcode', sessionCount: 1 },
+      ],
+    );
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
   }
 });
 

@@ -123,8 +123,9 @@ test('discovers OpenCode sessions from OPENCODE_DB with exact cwd matching', () 
   assert.deepEqual(subdirRefs, []);
 });
 
-test('syncAgent maps OpenCode distinctly and keeps Cowork as Claude Code', () => {
+test('syncAgent maps non-Claude agents distinctly and keeps Cowork as Claude Code', () => {
   assert.equal(syncAgent('opencode'), 'opencode');
+  assert.equal(syncAgent('jcode'), 'jcode');
   assert.equal(syncAgent('codex'), 'codex');
   assert.equal(syncAgent('cowork'), 'claude-code');
 });

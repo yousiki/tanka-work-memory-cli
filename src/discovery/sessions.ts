@@ -46,10 +46,20 @@ import {
  * so we scope on the metadata's userSelectedFolders[] (overlapping a registered root in either
  * direction) and upload the session's local_<uuid>/audit.jsonl.
  *
+ * Jcode stores durable session snapshots under ~/.jcode/sessions/session_*.json. The snapshot carries
+ * working_dir plus metadata and messages. Some active sessions also have a sibling
+ * session_*.journal.jsonl append log; we upload the JSON snapshot as the primary transcript and the
+ * journal as a sidecar when present.
+ *
  * Dedup is per (agent, id) — a session that shows up under multiple match-paths only counts once.
  */
 
-export type SessionAgent = 'claude-code' | 'codex' | 'cowork' | 'opencode';
+export type SessionAgent =
+  | 'claude-code'
+  | 'codex'
+  | 'cowork'
+  | 'opencode'
+  | 'jcode';
 
 export interface SidecarFile {
   /** path relative to the sidecar dir, POSIX "/"-separated (e.g. "subagents/agent-a1.jsonl") */
@@ -335,6 +345,23 @@ interface CoworkMeta {
   createdAt?: unknown;
 }
 
+interface JcodeSessionFile {
+  id?: unknown;
+  parent_id?: unknown;
+  title?: unknown;
+  created_at?: unknown;
+  updated_at?: unknown;
+  provider_key?: unknown;
+  model?: unknown;
+  working_dir?: unknown;
+  short_name?: unknown;
+  status?: unknown;
+  is_canary?: unknown;
+  is_debug?: unknown;
+  saved?: unknown;
+  env_snapshots?: Array<{ jcode_version?: unknown }>;
+}
+
 function probeClaude(head: string): {
   cwd?: string;
   id?: string;
@@ -393,6 +420,84 @@ function probeCodex(head: string): {
     if (cwd && id && meta.model) break;
   }
   return { cwd, id, meta };
+}
+
+export function jcodeSessionsRoot(
+  home: string = process.env.HOME || os.homedir(),
+): string {
+  return path.join(home, '.jcode', 'sessions');
+}
+
+function readJcodeSession(file: string): JcodeSessionFile | null {
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'));
+    return parsed && typeof parsed === 'object'
+      ? (parsed as JcodeSessionFile)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function jcodeSessionFiles(root: string): string[] {
+  try {
+    return readdirSync(root)
+      .filter((f) => f.startsWith('session_') && f.endsWith('.json'))
+      .map((f) => path.join(root, f));
+  } catch {
+    return [];
+  }
+}
+
+function jcodeJournalSidecar(jsonPath: string): SidecarFile[] {
+  const journal = jsonPath.replace(/\.json$/, '.journal.jsonl');
+  try {
+    const st = statSync(journal);
+    if (!st.isFile() || st.size <= 0) return [];
+    return [
+      {
+        relPath: 'journal.jsonl',
+        absPath: journal,
+        sizeBytes: st.size,
+        mtimeMs: st.mtimeMs,
+      },
+    ];
+  } catch {
+    return [];
+  }
+}
+
+function probeJcodeSession(file: string): {
+  id?: string;
+  cwd?: string;
+  meta: Record<string, string>;
+} {
+  const s = readJcodeSession(file);
+  const meta: Record<string, string> = {};
+  if (!s) return { meta };
+  setMeta(meta, 'title', s.title);
+  setMeta(meta, 'startedAt', s.created_at);
+  setMeta(meta, 'updatedAt', s.updated_at);
+  setMeta(meta, 'model', s.model);
+  setMeta(meta, 'provider', s.provider_key);
+  setMeta(meta, 'shortName', s.short_name);
+  setMeta(meta, 'status', s.status);
+  const version = Array.isArray(s.env_snapshots)
+    ? s.env_snapshots.find((e) => typeof e?.jcode_version === 'string')
+        ?.jcode_version
+    : undefined;
+  setMeta(meta, 'version', version);
+  if (typeof s.is_canary === 'boolean') meta.isCanary = String(s.is_canary);
+  if (typeof s.is_debug === 'boolean') meta.isDebug = String(s.is_debug);
+  if (typeof s.saved === 'boolean') meta.saved = String(s.saved);
+  return {
+    id: typeof s.id === 'string' && s.id ? s.id : path.basename(file, '.json'),
+    cwd:
+      typeof s.working_dir === 'string' && s.working_dir
+        ? s.working_dir
+        : undefined,
+    meta,
+  };
 }
 
 function walkJsonl(root: string, maxDepth: number): string[] {
@@ -626,6 +731,32 @@ export function discoverSessionsForProject(
   // ── OpenCode ─────────────────────────────────────────────
   for (const ref of discoverOpenCodeSessions(roots, cwdEqualsAny)) add(ref);
 
+  // ── Jcode ────────────────────────────────────────────────
+  const jcRoot = jcodeSessionsRoot();
+  if (isDir(jcRoot)) {
+    for (const fp of jcodeSessionFiles(jcRoot)) {
+      let st: ReturnType<typeof statSync>;
+      try {
+        st = statSync(fp);
+      } catch {
+        continue;
+      }
+      const probed = probeJcodeSession(fp);
+      if (probed.id && cwdEqualsAny(probed.cwd, roots)) {
+        add({
+          id: probed.id,
+          agent: 'jcode',
+          path: fp,
+          cwd: path.resolve(probed.cwd),
+          sizeBytes: st.size,
+          mtimeMs: st.mtimeMs,
+          meta: probed.meta,
+          sidecarFiles: jcodeJournalSidecar(fp),
+        });
+      }
+    }
+  }
+
   // ── Claude Cowork ────────────────────────────────────────
   const cwRoot = coworkSessionsRoot();
   // ~/Claude — Cowork's default workspace root (the dir the desktop app drops sessions into when
@@ -692,6 +823,7 @@ export function countSessionsForProject(cwds: readonly string[]): number {
 }
 
 export function primaryTranscriptRelPath(ref: SessionRef): string {
+  if (ref.agent === 'jcode') return 'transcript.json';
   return ref.transcript?.kind === 'opencode'
     ? 'transcript.json'
     : 'transcript.jsonl';
@@ -804,6 +936,21 @@ export function scanSessionCwds(): ScannedCwd[] {
   }
 
   for (const scanned of scanOpenCodeCwds()) out.push(scanned);
+
+  // Jcode — one JSON snapshot per durable session, tally by working_dir.
+  const jcRoot = jcodeSessionsRoot();
+  if (isDir(jcRoot)) {
+    const counts = new Map<string, number>();
+    for (const fp of jcodeSessionFiles(jcRoot)) {
+      const probed = probeJcodeSession(fp);
+      if (probed.cwd) {
+        const c = path.resolve(probed.cwd);
+        counts.set(c, (counts.get(c) ?? 0) + 1);
+      }
+    }
+    for (const [cwd, sessionCount] of counts)
+      out.push({ cwd, agent: 'jcode', sessionCount });
+  }
 
   // Cowork — anchor on the metadata's userSelectedFolders. Deliberately NO ~/Claude catch-all here
   // (unlike discoverSessionsForProject): this is reverse inference (session → cwd) with no

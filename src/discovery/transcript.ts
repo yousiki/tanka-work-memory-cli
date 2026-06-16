@@ -13,6 +13,7 @@ export type TranscriptAgent =
   | 'codex'
   | 'cowork'
   | 'opencode'
+  | 'jcode'
   | 'unknown';
 
 export type EntryCategory =
@@ -83,6 +84,15 @@ function prettyJson(v: unknown): string {
 function openCodeEntries(parsed: any): TranscriptEntry[] | null {
   if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.messages))
     return null;
+  const looksOpenCode =
+    parsed.info !== undefined ||
+    parsed.messages.some(
+      (m: any) =>
+        m &&
+        typeof m === 'object' &&
+        (m.info !== undefined || m.parts !== undefined),
+    );
+  if (!looksOpenCode) return null;
   const out: TranscriptEntry[] = [];
   out.push({
     lineNo: 1,
@@ -104,6 +114,51 @@ function openCodeEntries(parsed: any): TranscriptEntry[] | null {
   return out;
 }
 
+function jcodeEntries(parsed: any): TranscriptEntry[] | null {
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.messages))
+    return null;
+  const looksJcode =
+    typeof parsed.id === 'string' ||
+    parsed.working_dir !== undefined ||
+    parsed.provider_key !== undefined ||
+    parsed.messages.some(
+      (m: any) =>
+        m &&
+        typeof m === 'object' &&
+        (m.role !== undefined || m.content !== undefined),
+    );
+  if (!looksJcode) return null;
+  const out: TranscriptEntry[] = [];
+  out.push({
+    lineNo: 1,
+    entry: {
+      type: 'jcode_session',
+      id: parsed.id,
+      title: parsed.title,
+      created_at: parsed.created_at,
+      updated_at: parsed.updated_at,
+      provider_key: parsed.provider_key,
+      model: parsed.model,
+      working_dir: parsed.working_dir,
+      short_name: parsed.short_name,
+      status: parsed.status,
+      is_canary: parsed.is_canary,
+      is_debug: parsed.is_debug,
+      saved: parsed.saved,
+    },
+  });
+  let lineNo = 2;
+  for (const message of parsed.messages) {
+    if (!message || typeof message !== 'object') continue;
+    out.push({
+      lineNo,
+      entry: { type: 'jcode_message', ...message },
+    });
+    lineNo += 1;
+  }
+  return out;
+}
+
 /** Parse JSON/JSONL text → entries. Blank lines dropped; bad lines kept as `{ _unparsed }`. */
 export function parseTranscript(text: string): TranscriptEntry[] {
   const source = String(text ?? '');
@@ -113,6 +168,8 @@ export function parseTranscript(text: string): TranscriptEntry[] {
       const parsed = JSON.parse(trimmed);
       const opencode = openCodeEntries(parsed);
       if (opencode) return opencode;
+      const jcode = jcodeEntries(parsed);
+      if (jcode) return jcode;
       return [{ lineNo: 1, entry: parsed }];
     } catch {
       // Fall back to JSONL line parsing; a JSONL transcript also starts with "{".
@@ -249,6 +306,23 @@ export function categorize(entry: any, agent: string): EntryCategory {
     }
   }
 
+  if (agent === 'jcode') {
+    if (type === 'jcode_session') return 'meta';
+    if (type === 'jcode_message') {
+      const role = String(entry.display_role || entry.role || 'assistant');
+      const content = entry.content;
+      if (role === 'system') return 'system';
+      if (role === 'user') {
+        return Array.isArray(content) &&
+          content.length > 0 &&
+          content.every((b: any) => b?.type === 'tool_result')
+          ? 'tool-result'
+          : 'user';
+      }
+      return firstToolUse(content) ? 'tool' : 'assistant';
+    }
+  }
+
   if (agent === 'codex') {
     if (
       type === 'session_meta' ||
@@ -297,6 +371,11 @@ export function badgeLabel(entry: any, agent: string): string {
     if (entry.type === 'opencode_session') return 'session';
     if (entry.type === 'opencode_message')
       return `message · ${openCodeRole(entry)}`;
+  }
+  if (agent === 'jcode') {
+    if (entry.type === 'jcode_session') return 'session';
+    if (entry.type === 'jcode_message')
+      return `message · ${entry.display_role || entry.role || 'assistant'}`;
   }
   if (agent === 'codex' && entry.type === 'response_item') {
     const p = entry.payload || {};
@@ -389,6 +468,27 @@ export function previewLine(entry: any, agent: string): string {
     }
   }
 
+  if (agent === 'jcode') {
+    if (type === 'jcode_session') {
+      return truncate(String(entry.title ?? entry.id ?? 'Jcode session'), 90);
+    }
+    if (type === 'jcode_message') {
+      const c = entry.content;
+      const tu = firstToolUse(c);
+      const txt = messageText(c);
+      if (
+        !txt &&
+        Array.isArray(c) &&
+        c.some((b: any) => b && b.type === 'tool_result')
+      ) {
+        return '← [tool result]';
+      }
+      if (tu)
+        return `→ [${tu.name || 'tool'}]${txt ? ` ${truncate(txt, 60)}` : ' …'}`;
+      return truncate(txt || entry.role || '(empty)', 88);
+    }
+  }
+
   if (agent === 'codex') {
     if (type === 'session_meta') return 'session meta';
     if (type === 'turn_context') return 'turn context';
@@ -446,6 +546,7 @@ function isMessageEntry(entry: any, agent: string): boolean {
     );
   }
   if (agent === 'opencode') return entry.type === 'opencode_message';
+  if (agent === 'jcode') return entry.type === 'jcode_message';
   if (agent === 'codex') {
     return (
       entry.type === 'response_item' &&
@@ -606,6 +707,10 @@ export function entryDetail(
       role = openCodeRole(entry);
       model = typeof info.model === 'string' ? info.model : undefined;
       content = openCodeParts(entry);
+    } else if (agent === 'jcode') {
+      role = String(entry.display_role || entry.role || 'assistant');
+      model = typeof entry.model === 'string' ? entry.model : undefined;
+      content = entry.content;
     } else {
       const p = entry.payload || {};
       role = String(p.role || 'assistant');
