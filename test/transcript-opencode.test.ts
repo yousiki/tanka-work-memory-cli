@@ -107,3 +107,67 @@ test('parses Jcode session JSON into structured entries', () => {
     assert.equal(detail.blocks[1]!.kind, 'tool_use');
   }
 });
+
+test('parses GJC JSONL messages and tool calls', () => {
+  const entries = parseTranscript(
+    [
+      JSON.stringify({
+        type: 'session',
+        version: 3,
+        id: 'gjc-session-1',
+        timestamp: '2026-06-18T00:00:00Z',
+        cwd: '/work/proj',
+        title: 'GJC test',
+      }),
+      JSON.stringify({
+        type: 'model_change',
+        model: 'openai-codex/gpt-5.5',
+      }),
+      JSON.stringify({ type: 'thinking_level_change', thinkingLevel: 'high' }),
+      JSON.stringify({
+        type: 'message',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'hello gjc' }],
+        },
+      }),
+      JSON.stringify({
+        type: 'message',
+        model: 'openai-codex/gpt-5.5',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'thinking' },
+            { type: 'toolCall', name: 'bash', arguments: { command: 'pwd' } },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: 'message',
+        message: {
+          role: 'toolResult',
+          content: [{ type: 'text', text: '/work/proj' }],
+        },
+      }),
+    ].join('\n'),
+  );
+
+  assert.equal(entries.length, 6);
+  assert.equal(categorize(entries[0]!.entry, 'gjc'), 'meta');
+  assert.equal(categorize(entries[3]!.entry, 'gjc'), 'user');
+  assert.equal(categorize(entries[4]!.entry, 'gjc'), 'tool');
+  assert.equal(categorize(entries[5]!.entry, 'gjc'), 'tool-result');
+  assert.equal(badgeLabel(entries[3]!.entry, 'gjc'), 'message · user');
+  assert.equal(previewLine(entries[3]!.entry, 'gjc'), 'hello gjc');
+  assert.match(previewLine(entries[4]!.entry, 'gjc'), /→ \[bash\]/);
+  assert.match(previewLine(entries[5]!.entry, 'gjc'), /^← \/work\/proj/);
+
+  const detail = entryDetail(entries[4]!.entry, 'gjc', entries[4]!.lineNo);
+  assert.equal(detail.kind, 'message');
+  if (detail.kind === 'message') {
+    assert.equal(detail.role, 'assistant');
+    assert.equal(detail.model, 'openai-codex/gpt-5.5');
+    assert.equal(detail.blocks[0]!.kind, 'thinking');
+    assert.equal(detail.blocks[1]!.kind, 'tool_use');
+  }
+});

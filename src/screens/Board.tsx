@@ -56,6 +56,7 @@ const AGENT_TAG: Record<SessionAgent, string> = {
   cowork: 'CW',
   opencode: 'OC',
   jcode: 'JC',
+  gjc: 'GJC',
 };
 const LOG_LINES = 3;
 const PROJECT_INFO_HEIGHT = 2 + 1 + 1;

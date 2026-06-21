@@ -51,6 +51,9 @@ import {
  * session_*.journal.jsonl append log; we upload the JSON snapshot as the primary transcript and the
  * journal as a sidecar when present.
  *
+ * GJC stores per-cwd JSONL transcripts under ~/.gjc/agent/sessions/<encoded-cwd>/, with sibling
+ * dirs for resident-cache / large-output sidecars. We probe transcript heads for the exact cwd.
+ *
  * Dedup is per (agent, id) — a session that shows up under multiple match-paths only counts once.
  */
 
@@ -59,7 +62,8 @@ export type SessionAgent =
   | 'codex'
   | 'cowork'
   | 'opencode'
-  | 'jcode';
+  | 'jcode'
+  | 'gjc';
 
 export interface SidecarFile {
   /** path relative to the sidecar dir, POSIX "/"-separated (e.g. "subagents/agent-a1.jsonl") */
@@ -362,6 +366,21 @@ interface JcodeSessionFile {
   env_snapshots?: Array<{ jcode_version?: unknown }>;
 }
 
+interface GjcHeadLine {
+  type?: unknown;
+  version?: unknown;
+  id?: unknown;
+  timestamp?: unknown;
+  cwd?: unknown;
+  title?: unknown;
+  titleSource?: unknown;
+  model?: unknown;
+  provider?: unknown;
+  api?: unknown;
+  thinkingLevel?: unknown;
+  message?: { model?: unknown; role?: unknown };
+}
+
 function probeClaude(head: string): {
   cwd?: string;
   id?: string;
@@ -498,6 +517,96 @@ function probeJcodeSession(file: string): {
         : undefined,
     meta,
   };
+}
+
+export function gjcSessionsRoot(
+  home: string = process.env.HOME || os.homedir(),
+): string {
+  return path.join(home, '.gjc', 'agent', 'sessions');
+}
+
+function gjcSessionFiles(root: string): string[] {
+  const out: string[] = [];
+  const collectJsonl = (dir: string): void => {
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const p = path.join(dir, e);
+      try {
+        const st = statSync(p);
+        if (st.isFile() && e.endsWith('.jsonl')) out.push(p);
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
+  collectJsonl(root);
+
+  let entries: string[];
+  try {
+    entries = readdirSync(root);
+  } catch {
+    return out;
+  }
+  for (const e of entries) {
+    const p = path.join(root, e);
+    try {
+      if (statSync(p).isDirectory()) collectJsonl(p);
+    } catch {
+      /* ignore */
+    }
+  }
+  return out;
+}
+
+function gjcFallbackId(file: string): string {
+  const base = path.basename(file, '.jsonl');
+  const sep = base.lastIndexOf('_');
+  return sep >= 0 ? base.slice(sep + 1) : base;
+}
+
+function probeGjc(head: string): {
+  id?: string;
+  cwd?: string;
+  meta: Record<string, string>;
+} {
+  let cwd: string | undefined;
+  let id: string | undefined;
+  const meta: Record<string, string> = {};
+  for (const line of head.split('\n').slice(0, 50)) {
+    const t = line.trim();
+    if (!t.startsWith('{')) continue;
+    let o: GjcHeadLine;
+    try {
+      o = JSON.parse(t);
+    } catch {
+      continue;
+    }
+    const type = typeof o.type === 'string' ? o.type : '';
+    if (type === 'session') {
+      if (!cwd && typeof o.cwd === 'string') cwd = o.cwd;
+      if (!id && typeof o.id === 'string') id = o.id;
+      setMeta(meta, 'startedAt', o.timestamp);
+      setMeta(meta, 'title', o.title);
+      setMeta(meta, 'titleSource', o.titleSource);
+      setMeta(
+        meta,
+        'version',
+        typeof o.version === 'number' ? String(o.version) : o.version,
+      );
+    }
+    setMeta(meta, 'model', o.model ?? o.message?.model);
+    setMeta(meta, 'provider', o.provider);
+    setMeta(meta, 'api', o.api);
+    setMeta(meta, 'thinkingLevel', o.thinkingLevel);
+    if (cwd && id && meta.model) break;
+  }
+  return { cwd, id, meta };
 }
 
 function walkJsonl(root: string, maxDepth: number): string[] {
@@ -730,6 +839,32 @@ export function discoverSessionsForProject(
 
   // ── OpenCode ─────────────────────────────────────────────
   for (const ref of discoverOpenCodeSessions(roots, cwdEqualsAny)) add(ref);
+  // ── GJC ──────────────────────────────────────────────────
+  const gjRoot = gjcSessionsRoot();
+  if (isDir(gjRoot)) {
+    for (const fp of gjcSessionFiles(gjRoot)) {
+      let st: ReturnType<typeof statSync>;
+      try {
+        st = statSync(fp);
+      } catch {
+        continue;
+      }
+      const probed = probeGjc(readHead(fp));
+      if (cwdEqualsAny(probed.cwd, roots)) {
+        const sidecarDir = fp.replace(/\.jsonl$/, '');
+        add({
+          id: probed.id ?? gjcFallbackId(fp),
+          agent: 'gjc',
+          path: fp,
+          cwd: path.resolve(probed.cwd),
+          sizeBytes: st.size,
+          mtimeMs: st.mtimeMs,
+          meta: probed.meta,
+          sidecarFiles: isDir(sidecarDir) ? walkSidecar(sidecarDir) : [],
+        });
+      }
+    }
+  }
 
   // ── Jcode ────────────────────────────────────────────────
   const jcRoot = jcodeSessionsRoot();
@@ -936,6 +1071,21 @@ export function scanSessionCwds(): ScannedCwd[] {
   }
 
   for (const scanned of scanOpenCodeCwds()) out.push(scanned);
+
+  // GJC — one JSONL transcript per session under project-ish dirs; tally by probed cwd.
+  const gjRoot = gjcSessionsRoot();
+  if (isDir(gjRoot)) {
+    const counts = new Map<string, number>();
+    for (const fp of gjcSessionFiles(gjRoot)) {
+      const probed = probeGjc(readHead(fp));
+      if (probed.cwd) {
+        const c = path.resolve(probed.cwd);
+        counts.set(c, (counts.get(c) ?? 0) + 1);
+      }
+    }
+    for (const [cwd, sessionCount] of counts)
+      out.push({ cwd, agent: 'gjc', sessionCount });
+  }
 
   // Jcode — one JSON snapshot per durable session, tally by working_dir.
   const jcRoot = jcodeSessionsRoot();

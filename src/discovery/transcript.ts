@@ -14,6 +14,7 @@ export type TranscriptAgent =
   | 'cowork'
   | 'opencode'
   | 'jcode'
+  | 'gjc'
   | 'unknown';
 
 export type EntryCategory =
@@ -209,9 +210,9 @@ export function messageText(content: any): string {
       bits.push(block.text);
     else if (t === 'input_text' && typeof block.text === 'string')
       bits.push(block.text);
-    else if (t === 'tool_use' || t === 'server_tool_use')
+    else if (t === 'tool_use' || t === 'server_tool_use' || t === 'toolCall')
       bits.push(`→ [${block.name || 'tool'}]`);
-    else if (t === 'tool_result') {
+    else if (t === 'tool_result' || t === 'toolResult') {
       const r = block.content;
       bits.push(typeof r === 'string' ? r : messageText(r));
     } else if (t === 'image') bits.push('[image]');
@@ -224,6 +225,7 @@ function firstToolUse(content: any): any {
   if (!Array.isArray(content)) return null;
   for (const b of content) {
     if (b && (b.type === 'tool_use' || b.type === 'server_tool_use')) return b;
+    if (b && b.type === 'toolCall') return b;
   }
   return null;
 }
@@ -323,6 +325,23 @@ export function categorize(entry: any, agent: string): EntryCategory {
     }
   }
 
+  if (agent === 'gjc') {
+    if (
+      type === 'session' ||
+      type === 'model_change' ||
+      type === 'thinking_level_change'
+    ) {
+      return 'meta';
+    }
+    if (type === 'message') {
+      const role = String(entry.message?.role || '');
+      if (role === 'system') return 'system';
+      if (role === 'toolResult') return 'tool-result';
+      if (role === 'user') return 'user';
+      return firstToolUse(entry.message?.content) ? 'tool' : 'assistant';
+    }
+  }
+
   if (agent === 'codex') {
     if (
       type === 'session_meta' ||
@@ -376,6 +395,13 @@ export function badgeLabel(entry: any, agent: string): string {
     if (entry.type === 'jcode_session') return 'session';
     if (entry.type === 'jcode_message')
       return `message · ${entry.display_role || entry.role || 'assistant'}`;
+  }
+  if (agent === 'gjc') {
+    if (entry.type === 'session') return 'session';
+    if (entry.type === 'model_change') return 'model';
+    if (entry.type === 'thinking_level_change') return 'thinking';
+    if (entry.type === 'message')
+      return `message · ${entry.message?.role || 'assistant'}`;
   }
   if (agent === 'codex' && entry.type === 'response_item') {
     const p = entry.payload || {};
@@ -450,6 +476,33 @@ export function previewLine(entry: any, agent: string): string {
           'system',
         90,
       );
+    }
+  }
+
+  if (agent === 'gjc') {
+    if (type === 'session')
+      return truncate(String(entry.title ?? entry.id ?? 'GJC session'), 90);
+    if (type === 'model_change') return `model: ${entry.model ?? '?'}`;
+    if (type === 'thinking_level_change')
+      return `thinking: ${entry.thinkingLevel ?? '?'}`;
+    if (type === 'message') {
+      const role = String(entry.message?.role || 'assistant');
+      const c = entry.message?.content;
+      const txt = messageText(c);
+      if (role === 'toolResult') return `← ${truncate(txt || '(empty)', 86)}`;
+      const tu = firstToolUse(c);
+      if (tu) {
+        const toolText = Array.isArray(c)
+          ? messageText(
+              c.filter(
+                (b: any) =>
+                  b !== tu && b?.type !== 'thinking' && b?.type !== 'reasoning',
+              ),
+            )
+          : txt;
+        return `→ [${tu.name || 'tool'}]${toolText ? ` ${truncate(toolText, 60)}` : ' …'}`;
+      }
+      return truncate(txt || role || '(empty)', 88);
     }
   }
 
@@ -547,6 +600,12 @@ function isMessageEntry(entry: any, agent: string): boolean {
   }
   if (agent === 'opencode') return entry.type === 'opencode_message';
   if (agent === 'jcode') return entry.type === 'jcode_message';
+  if (agent === 'gjc')
+    return (
+      entry.type === 'message' &&
+      entry.message &&
+      typeof entry.message === 'object'
+    );
   if (agent === 'codex') {
     return (
       entry.type === 'response_item' &&
@@ -623,13 +682,22 @@ function messageBlocks(content: any): DetailBlock[] {
           ? block.summary.map((s: any) => s?.text || '').join('\n')
           : '');
       out.push({ kind: 'thinking', text: String(rt || '') });
-    } else if (t === 'tool_use' || t === 'server_tool_use') {
+    } else if (
+      t === 'tool_use' ||
+      t === 'server_tool_use' ||
+      t === 'toolCall'
+    ) {
       out.push({
         kind: 'tool_use',
         name: String(block.name || 'tool'),
-        input: block.input !== undefined ? prettyJson(block.input) : '',
+        input:
+          block.input !== undefined
+            ? prettyJson(block.input)
+            : block.arguments !== undefined
+              ? prettyJson(block.arguments)
+              : '',
       });
-    } else if (t === 'tool_result') {
+    } else if (t === 'tool_result' || t === 'toolResult') {
       const raw =
         typeof block.content === 'string'
           ? block.content
@@ -637,7 +705,7 @@ function messageBlocks(content: any): DetailBlock[] {
       const truncated = raw.length > SESSION_DETAIL_TEXT_MAX;
       out.push({
         kind: 'tool_result',
-        isError: Boolean(block.is_error),
+        isError: Boolean(block.is_error ?? block.isError),
         text: truncated
           ? raw.slice(0, SESSION_DETAIL_TEXT_MAX)
           : raw || '(empty)',
@@ -665,6 +733,8 @@ const NOTABLE_FIELDS = [
   'parentUuid',
   'sessionId',
   'version',
+  'title',
+  'titleSource',
   'gitBranch',
   'cwd',
   'userType',
@@ -673,11 +743,16 @@ const NOTABLE_FIELDS = [
   'model',
   'id',
   'leafUuid',
+  'parentId',
   'level',
   'toolUseID',
   'isMeta',
   'isCompactSummary',
   'isApiErrorMessage',
+  'thinkingLevel',
+  'provider',
+  'api',
+  'stopReason',
 ];
 
 /** Build the structured detail for one entry. */
@@ -697,10 +772,15 @@ export function entryDetail(
     let role: string;
     let model: string | undefined;
     let content: any;
-    if (agent === 'claude-code' || agent === 'cowork') {
+    if (agent === 'claude-code' || agent === 'cowork' || agent === 'gjc') {
       const m = entry.message || {};
       role = String(m.role || entry.type);
-      model = typeof m.model === 'string' ? m.model : undefined;
+      model =
+        typeof entry.model === 'string'
+          ? entry.model
+          : typeof m.model === 'string'
+            ? m.model
+            : undefined;
       content = m.content;
     } else if (agent === 'opencode') {
       const info = entry.info || {};

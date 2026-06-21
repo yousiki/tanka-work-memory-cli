@@ -5,7 +5,8 @@ work-memory session sync tool — for them. This is the complete, deterministic,
 non-interactive procedure.
 
 `tanka-wm` discovers raw coding-agent session transcripts (Claude Code, Codex,
-Cowork) on this machine and syncs them to the Tanka work-memory backend.
+Cowork, OpenCode, Jcode, GJC) on this machine and syncs them to the Tanka
+work-memory backend.
 "Fully configured" means: a CLI on `PATH`, config + credentials written,
 and a scheduled job running the upload.
 

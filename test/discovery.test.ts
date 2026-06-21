@@ -14,6 +14,7 @@ import {
   discoverSessionsForProject,
   expandToWorktreeUnion,
   foldWorktreesToOwner,
+  gjcSessionsRoot,
   jcodeSessionsRoot,
   owningWorktree,
   primaryTranscriptRelPath,
@@ -266,6 +267,103 @@ test('discovers Jcode JSON sessions and sibling journal sidecar', () => {
       [
         { cwd: resolve(other), agent: 'jcode', sessionCount: 1 },
         { cwd: resolve(cwd), agent: 'jcode', sessionCount: 1 },
+      ],
+    );
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('discovers GJC JSONL sessions and sibling sidecars', () => {
+  const home = mkdtempSync(join(tmpdir(), 'wm-gjc-home-'));
+  const oldHome = process.env.HOME;
+  const cwd = join(home, 'work', 'proj');
+  const other = join(home, 'work', 'other');
+  try {
+    process.env.HOME = home;
+    const root = gjcSessionsRoot(home);
+    const projectDir = join(root, '-work-proj');
+    mkdirSync(projectDir, { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(other, { recursive: true });
+
+    const sessionPath = join(
+      projectDir,
+      '2026-06-18T00-00-00-000Z_gjc-session-1.jsonl',
+    );
+    writeFileSync(
+      sessionPath,
+      [
+        JSON.stringify({
+          type: 'session',
+          version: 3,
+          id: 'gjc-session-1',
+          timestamp: '2026-06-18T00:00:00.000Z',
+          cwd,
+          title: 'GJC test',
+        }),
+        JSON.stringify({
+          type: 'model_change',
+          timestamp: '2026-06-18T00:00:01.000Z',
+          model: 'openai-codex/gpt-5.5',
+        }),
+        JSON.stringify({
+          type: 'message',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: 'hello gjc' }],
+          },
+        }),
+      ].join('\n'),
+    );
+    const sidecarDir = sessionPath.replace(/\.jsonl$/, '');
+    mkdirSync(sidecarDir, { recursive: true });
+    writeFileSync(join(sidecarDir, '3.bash-original.log'), 'full bash log');
+
+    writeFileSync(
+      join(projectDir, '2026-06-18T00-00-02-000Z_gjc-other.jsonl'),
+      [
+        JSON.stringify({
+          type: 'session',
+          version: 3,
+          id: 'gjc-other',
+          timestamp: '2026-06-18T00:00:02.000Z',
+          cwd: other,
+          title: 'Other GJC test',
+        }),
+        JSON.stringify({
+          type: 'model_change',
+          model: 'cliproxyapi/gpt-5.5-fast',
+        }),
+      ].join('\n'),
+    );
+
+    const refs = discoverSessionsForProject([cwd]).filter(
+      (ref) => ref.agent === 'gjc',
+    );
+    assert.equal(refs.length, 1);
+    const ref = refs[0]!;
+    assert.equal(ref.id, 'gjc-session-1');
+    assert.equal(ref.cwd, resolve(cwd));
+    assert.equal(ref.path, sessionPath);
+    assert.equal(ref.meta.title, 'GJC test');
+    assert.equal(ref.meta.model, 'openai-codex/gpt-5.5');
+    assert.equal(ref.meta.version, '3');
+    assert.equal(primaryTranscriptRelPath(ref), 'transcript.jsonl');
+    assert.deepEqual(
+      ref.sidecarFiles.map((f) => f.relPath),
+      ['3.bash-original.log'],
+    );
+
+    assert.deepEqual(
+      scanSessionCwds()
+        .filter((c) => c.agent === 'gjc')
+        .sort((a, b) => a.cwd.localeCompare(b.cwd)),
+      [
+        { cwd: resolve(other), agent: 'gjc', sessionCount: 1 },
+        { cwd: resolve(cwd), agent: 'gjc', sessionCount: 1 },
       ],
     );
   } finally {

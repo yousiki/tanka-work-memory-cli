@@ -118,11 +118,12 @@ async function ensureRemoteProject(
 }
 
 /** Backend sync agent types; cowork is a Claude Desktop variant of Claude Code. */
-type SyncAgent = 'claude-code' | 'codex' | 'opencode' | 'jcode';
+type SyncAgent = 'claude-code' | 'codex' | 'opencode' | 'jcode' | 'gjc';
 export function syncAgent(agent: string): SyncAgent {
   if (agent === 'codex') return 'codex';
   if (agent === 'opencode') return 'opencode';
   if (agent === 'jcode') return 'jcode';
+  if (agent === 'gjc') return 'gjc';
   return 'claude-code';
 }
 

@@ -20,6 +20,7 @@ coverage/
 
 # Work-memory TUI runtime state (config/credentials/manifest live here in dev)
 .work-memory/
+.gjc/
 
 # OS / editor
 .DS_Store
